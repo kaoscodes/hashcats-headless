@@ -33,6 +33,14 @@ curl -fsSL https://raw.githubusercontent.com/kaoscodes/hashcats-headless/main/sc
 
 The download and clone require this repository to be public, or separately configured GitHub access while it is private.
 
+To run fixes already in your local checkout before they are published to GitHub, run from that checkout's root:
+
+```sh
+bash scripts/runpod.sh --local
+```
+
+Local mode builds the current directory, including uncommitted changes, without cloning or pulling. Set `HASHCATS_DIR` to use a different local checkout. The rest of the setup and verification runs normally.
+
 The wizard detects NVIDIA GPUs and selects native CUDA. It requires an installed CUDA toolkit (`nvcc`, also detected at `/usr/local/cuda/bin/nvcc`), installs Node.js 22 when needed, Git, tmux, and the C++ build tools, then clones or updates this repo and installs the pinned npm dependencies. It builds the CUDA miner and verifies it on every visible CUDA GPU before asking for:
 
 1. Your private key, entered with terminal echo disabled.
@@ -58,7 +66,7 @@ To choose another install directory or session name:
 HASHCATS_DIR=/workspace/my-miner HASHCATS_SESSION=my-miner bash /tmp/hashcats-runpod.sh
 ```
 
-If NVIDIA detection, CUDA compiler checks, the build, or GPU verification fails, setup stops before requesting a key or starting mining. Use a CUDA development image if `nvcc` is missing; the wizard does not fall back to Vulkan. `NVCC=/path/to/nvcc` and `CUDA_ARCH=sm_120` can override the compiler and build architecture. `CUDA_VISIBLE_DEVICES` restricts the selected GPUs and is preserved in the generated runner.
+If NVIDIA detection, CUDA compiler checks, the build, or GPU verification fails, setup stops before requesting a key or starting mining. Use a CUDA development image if `nvcc` is missing; the wizard does not fall back to Vulkan. `NVCC=/path/to/nvcc` and `CUDA_ARCH` can override the compiler and build architecture. Blackwell native builds (`CUDA_ARCH=sm_120`) require CUDA 12.8 or newer; with an older toolkit, leave `CUDA_ARCH` unset to allow the automatic PTX compatibility retry. The CUDA version shown by `nvidia-smi` describes driver support; check `nvcc --version` for the installed toolkit. `CUDA_VISIBLE_DEVICES` restricts the selected GPUs and is preserved in the generated runner.
 
 The installer accepts a clean `main` checkout of this repository and updates it with a fast-forward pull. It leaves local changes and other repositories alone. NVIDIA kernel drivers and GPU device access must come from the pod runtime; the installer does not replace them.
 
@@ -155,11 +163,11 @@ node src/cli.js benchmark --engine cuda --seconds 30
 node src/cli.js mine --engine cuda --address 0xYOUR_WALLET_ADDRESS
 ```
 
-The build defaults to `-arch=native`, targeting GPUs visible at build time. Rebuild when moving to different hardware, or specify an architecture supported by your toolkit, for example `CUDA_ARCH=sm_120 npm run build:cuda` for the tested Blackwell card. `NVCC=/path/to/nvcc` overrides the compiler. The executable is stored in `.native/cuda-miner`; CUDA does not require WebGPU or Vulkan at runtime. The current build and backend have been tested on Linux with CUDA 12.8 and NVIDIA driver 580.173.02.
+The build defaults to `-arch=native`, targeting GPUs visible at build time. If an older toolkit rejects a detected GPU architecture (for example CUDA 12.4 with Blackwell), it retries with `-arch=all-major`, including PTX that the driver can compile for newer GPUs. This compatibility build takes longer, and the first GPU startup may also take longer for PTX compilation. Other compiler errors and explicit non-native `CUDA_ARCH` overrides still fail without retry. Rebuild when moving to different hardware, or specify an architecture supported by your toolkit, for example `CUDA_ARCH=sm_120 npm run build:cuda` for the tested Blackwell card. `NVCC=/path/to/nvcc` overrides the compiler. The executable is stored in `.native/cuda-miner`; CUDA does not require WebGPU or Vulkan at runtime. The current build and backend have been tested on Linux with CUDA 12.8 and NVIDIA driver 580.173.02.
 
-CUDA supports **all visible GPUs under one coordinator** with `--engine cuda --gpus all`, or a subset with `--gpus 0,1`. Device selection is verified against CUDA UUIDs; each GPU has its own hashing process and nonce range, sharing one wallet, dashboard, mint limit, and submission queue. Ordinals respect `CUDA_VISIBLE_DEVICES` and are separate from Vulkan indices. Use `devices --engine cuda --gpus all` to list them. Without `--gpus`, CUDA selects one device with `--cuda-device 0` (the default). Do not combine `--gpus` with `--cuda-device`.
+CUDA supports **all visible GPUs under one coordinator** with `--engine cuda --gpus all`, or a subset with `--gpus 0,1`. Device selection is verified against CUDA UUIDs, using MIG instance UUIDs on partitioned GPUs; each GPU has its own hashing process and nonce range, sharing one wallet, dashboard, mint limit, and submission queue. Ordinals respect `CUDA_VISIBLE_DEVICES` and are separate from Vulkan indices. Use `devices --engine cuda --gpus all` to list them. Without `--gpus`, CUDA selects one device with `--cuda-device 0` (the default). Do not combine `--gpus` with `--cuda-device`.
 
-The RunPod wizard launches `--engine cuda --gpus all --kernel native`. CUDA fleet discovery, self-test, and benchmarking have been exercised on the available single GPU; multiple-card coordination is covered by software tests, but multi-card hardware scaling remains untested. Use one coordinator per wallet.
+The RunPod wizard launches `--engine cuda --gpus all --kernel native`. CUDA fleet discovery and self-test also passed on 10 Blackwell MIG instances with CUDA 12.4 using the PTX compatibility build (3,082 hash comparisons and five target-boundary checks per instance). Benchmarking has been exercised on a single GPU; multiple-card coordination is covered by software tests, but multi-card hardware scaling remains untested. Use one coordinator per wallet.
 
 CUDA accepts `--workgroup 64|128|256` (default **128**) and `--per-thread 1..1024` (default **16**). Its kernel is `native`; omit `--kernel` or pass `--kernel native`. Do not combine CUDA with `--backend` or `--adapter`. Existing mint and gas limits also apply when adding `--engine cuda` to a submission command.
 

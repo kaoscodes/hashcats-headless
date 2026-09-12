@@ -141,27 +141,39 @@ main() {
 Hashcats RunPod wizard (Ubuntu/PyTorch, NVIDIA x86_64)
 
   bash scripts/runpod.sh
+  bash scripts/runpod.sh --local
 
 Installs dependencies, clones/updates the public repo, tests the GPU, prompts
 for a private key and mint limits, then starts CUDA on all visible GPUs in tmux.
 Requires a CUDA development image with nvcc; no Vulkan fallback.
+Use --local from a checkout to build that directory without cloning or pulling.
+Local mode accepts uncommitted fixes; HASHCATS_DIR can select another checkout.
 
 Optional environment variables:
   HASHCATS_DIR       Checkout directory (default /workspace/hashcats-headless)
   HASHCATS_SESSION   tmux session name (default hashcats)
   NVCC              CUDA compiler path (auto-detected)
-  CUDA_ARCH         nvcc architecture (default native)
+  CUDA_ARCH         nvcc architecture (default native, with PTX compatibility retry)
 
 Keys and logs live in the checkout's ignored .runpod/ directory. The wizard
 never prints the key, installs kernel drivers, or restarts a failed miner.
 HELP
     return
   fi
-  [[ $# == 0 ]] || die 'Unknown argument. Use --help.'
+  local use_local=false
+  if [[ $# == 1 && $1 == --local ]]; then
+    use_local=true
+    INSTALL_DIR=${HASHCATS_DIR:-$PWD}
+  elif [[ $# != 0 ]]; then
+    die 'Unknown argument. Use --help.'
+  fi
   [[ $EUID == 0 ]] || die 'Run this from the root terminal in your RunPod pod.'
   [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || die 'This installer requires Linux x86_64.'
   command -v apt-get >/dev/null || die 'This installer requires an Ubuntu/Debian-based image.'
   [[ "$INSTALL_DIR" == /* && "$INSTALL_DIR" != / ]] || die 'HASHCATS_DIR must be an absolute checkout path, not /.'
+  if [[ "$use_local" == true ]]; then
+    [[ -f "$INSTALL_DIR/package.json" && -f "$INSTALL_DIR/scripts/build-cuda.js" && -f "$INSTALL_DIR/src/cli.js" ]] || die 'Local checkout not found. Run --local from the repository root or set HASHCATS_DIR.'
+  fi
   [[ "$SESSION" =~ ^[a-zA-Z0-9_-]+$ ]] || die 'HASHCATS_SESSION may contain only letters, digits, underscores, and hyphens.'
   exec 3</dev/tty 4>/dev/tty || die 'Open a RunPod terminal or SSH with a TTY (ssh -t) to answer the wizard.'
   say 'Hashcats / RunPod setup'
@@ -185,7 +197,9 @@ HELP
   install_node
 
   say "Preparing $INSTALL_DIR…"
-  if [[ -d "$INSTALL_DIR/.git" ]]; then
+  if [[ "$use_local" == true ]]; then
+    say 'Using local checkout as-is (no Git update).'
+  elif [[ -d "$INSTALL_DIR/.git" ]]; then
     local origin
     origin=$(git -C "$INSTALL_DIR" remote get-url origin)
     [[ "$origin" == "$REPO_URL" || "$origin" == "${REPO_URL%.git}" || "$origin" == git@github.com:kaoscodes/hashcats-headless.git ]] || die 'Existing directory has a different Git origin; choose another HASHCATS_DIR.'

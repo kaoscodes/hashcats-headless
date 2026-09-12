@@ -92,12 +92,19 @@ exit 23
   assert.equal(statSync(log).mode & 0o777,0o600);
 }));
 
-for (const scenario of ['start', 'decline', 'gpu-failure', 'build-failure', 'no-gpu', 'compiler-failure', 'existing-session']) {
+for (const scenario of ['start', 'decline', 'local', 'gpu-failure', 'build-failure', 'no-gpu', 'compiler-failure', 'existing-session']) {
   test(`RunPod wizard orchestration: ${scenario} (mock system services, no mining)`, {skip: process.getuid?.() !== 0}, () => fixture(dir => {
     const input = join(dir,'input');
     const trace = join(dir,'trace');
     writeFileSync(trace,'');
-    writeFileSync(input,`${dummyKey}\n2\n0.09\n${scenario === 'decline' ? 'no' : 'yes'}\n`,{mode:0o600});
+    writeFileSync(input,`${dummyKey}\n2\n0.09\n${['decline','local'].includes(scenario) ? 'no' : 'yes'}\n`,{mode:0o600});
+    if (scenario === 'local') {
+      mkdirSync(join(dir,'checkout/scripts'),{recursive:true});
+      mkdirSync(join(dir,'checkout/src'));
+      for (const file of ['package.json','scripts/build-cuda.js','src/cli.js']) {
+        writeFileSync(join(dir,'checkout',file),'local changes');
+      }
+    }
     const r = shell(`
       INSTALL_DIR=${quote(join(dir,'checkout'))}
       SESSION=wizard-test
@@ -130,7 +137,7 @@ for (const scenario of ['start', 'decline', 'gpu-failure', 'build-failure', 'no-
         if [[ "$1" == has-session ]]; then [[ ${quote(scenario)} == existing-session ]]; return; fi
         record "tmux $*"
       }
-      main
+      ${scenario === 'local' ? 'cd "$INSTALL_DIR"\nunset HASHCATS_DIR\nmain --local' : 'main'}
     `);
     const events=readFileSync(trace,'utf8');
     if (scenario === 'gpu-failure') {
@@ -158,6 +165,12 @@ for (const scenario of ['start', 'decline', 'gpu-failure', 'build-failure', 'no-
       assert.ok(!readFileSync(join(dir,'prompts'),'utf8').includes('Private key'));
     }
     if (scenario === 'existing-session') assert.ok(!events.includes('npm'));
+    if (scenario === 'local') {
+      assert.ok(!events.includes('git'));
+      assert.match(events,/npm run build:cuda/);
+      assert.match(events,/node src\/cli.js selftest --engine cuda --gpus all/);
+      assert.equal(readFileSync(join(dir,'checkout/scripts/build-cuda.js'),'utf8'),'local changes');
+    }
     assert.ok(!r.stdout.includes(dummyKey) && !r.stderr.includes(dummyKey) && !events.includes(dummyKey));
   }));
 }

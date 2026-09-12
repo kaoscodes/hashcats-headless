@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <cudaTypedefs.h>
 #include <cstdint>
 #include <iostream>
 #include <iomanip>
@@ -8,6 +9,18 @@
 #include <csignal>
 using U64 = unsigned long long;
 void check(cudaError_t e) { if(e!=cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
+void printUuid(int device) {
+  // cudaDeviceProp::uuid can identify the parent GPU for multiple MIG instances.
+  // Resolve the MIG-aware v2 driver API through cudart, without a libcuda link.
+  void *entry=nullptr;
+  check(cudaGetDriverEntryPoint("cuDeviceGetUuid",&entry,cudaEnableDefault));
+  if(!entry)throw std::runtime_error("CUDA device UUID lookup is unavailable");
+  CUuuid uuid{};
+  auto getUuid=reinterpret_cast<PFN_cuDeviceGetUuid_v11040>(entry);
+  if(getUuid(&uuid,device)!=CUDA_SUCCESS)throw std::runtime_error("CUDA device UUID lookup failed");
+  for(int k=0;k<16;k++)std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(static_cast<unsigned char>(uuid.bytes[k]));
+  std::cout<<std::dec;
+}
 __device__ __forceinline__ U64 rol(U64 x, int n) { return n ? (x<<n)|(x>>(64-n)) : x; }
 __device__ __constant__ U64 RC[24]={0x1ULL,0x8082ULL,0x800000000000808aULL,0x8000000080008000ULL,0x808bULL,0x80000001ULL,0x8000000080008081ULL,0x8000000000008009ULL,0x8aULL,0x88ULL,0x80008009ULL,0x8000000aULL,0x8000808bULL,0x800000000000008bULL,0x8000000000008089ULL,0x8000000000008003ULL,0x8000000000008002ULL,0x8000000000000080ULL,0x800aULL,0x800000008000000aULL,0x8000000080008081ULL,0x8000000000008080ULL,0x80000001ULL,0x8000000080008008ULL};
 __device__ __forceinline__ void keccak(U64 *a) {
@@ -70,7 +83,7 @@ int main(int argc,char **argv) {
         cudaDeviceProp p{};check(cudaGetDeviceProperties(&p,i));
         if(i)std::cout<<',';
         std::cout<<"{\"index\":"<<i<<",\"name\":\""<<p.name<<"\",\"uuid\":\"";
-        for(int k=0;k<16;k++)std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(static_cast<unsigned char>(p.uuid.bytes[k]));
+        printUuid(i);
         std::cout<<std::dec<<"\"}";
       }
       std::cout<<']'<<std::endl;return 0;
@@ -78,7 +91,7 @@ int main(int argc,char **argv) {
     int device=argc>1?std::stoi(argv[1]):0;check(cudaSetDevice(device));
     cudaDeviceProp prop{};check(cudaGetDeviceProperties(&prop,device));
     std::cout<<"{\"device\":\""<<prop.name<<"\",\"index\":"<<device<<",\"backend\":\"cuda\",\"uuid\":\"";
-    for(int k=0;k<16;k++)std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(static_cast<unsigned char>(prop.uuid.bytes[k]));
+    printUuid(device);
     std::cout<<std::dec<<"\"}"<<std::endl;
     uint32_t *winner;unsigned char *dump;
     check(cudaMalloc(&winner,4));check(cudaMalloc(&dump,65536*32));
