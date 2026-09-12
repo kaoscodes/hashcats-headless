@@ -105,7 +105,7 @@ write_runner() {
     printf 'cd %q || exit 1\n' "$INSTALL_DIR"
     printf 'log=%q/miner-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$$.jsonl\n' "$STATE_DIR"
     printf 'printf "Mining log: %%s\\n" "$log"\n'
-    printf '%q src/cli.js mine --backend vulkan --kernel split --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q --tui --log-file "$log"\n' \
+    printf '%q src/cli.js mine --backend vulkan --gpus all --kernel split --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q --tui --log-file "$log"\n' \
       "$node_bin" "$key_file" "$max_price" "$max_mints"
     printf 'status=$?\n'
     printf 'printf "\\nMiner exited with status %%s. No automatic restart.\\n" "$status"\n'
@@ -149,7 +149,7 @@ HELP
   say 'Installing system dependencies…'
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git xz-utils tmux libegl1 libvulkan1 util-linux
+  apt-get install -y -qq ca-certificates curl git xz-utils tmux libegl1 libvulkan1 util-linux build-essential libvulkan-dev
   # Serialize setup, including any writes to saved credentials and runner files.
   exec 9>/tmp/hashcats-runpod-setup.lock
   flock -n 9 || die 'Another Hashcats installer is already running.'
@@ -171,10 +171,11 @@ HELP
   fi
   cd "$INSTALL_DIR"
   npm ci
+  npm run build:gpu
   say 'Checking software and both GPU kernels…'
   npm test
-  node src/cli.js devices --backend vulkan
-  node src/cli.js selftest --backend vulkan || die 'GPU verification failed. Check GPU access and Vulkan driver libraries; no miner was started.'
+  node src/cli.js devices --backend vulkan --gpus all
+  node src/cli.js selftest --backend vulkan --gpus all || die 'GPU verification failed. Check GPU access and Vulkan driver libraries; no miner was started.'
 
   STATE_DIR="$INSTALL_DIR/.runpod"
   mkdir -p "$STATE_DIR"
@@ -206,7 +207,7 @@ HELP
   node src/cli.js status --address "$address"
   say 'Ready to start'
   printf 'Wallet: %s\nMint limit: %s\nPrice ceiling: %s ETH per cat, plus gas\n' "$address" "$max_mints" "$max_price"
-  printf 'Gas ceilings: 1,000,000 gas / 10 gwei per gas\nGPU: Vulkan / split kernel\nSession: %s\n' "$SESSION"
+  printf 'Gas ceilings: 1,000,000 gas / 10 gwei per gas\nGPU: all available Vulkan GPUs / split kernel\nSession: %s\n' "$SESSION"
   printf 'Key file: %s (mode 600)\n' "$key_file"
   prompt 'Start mining and submit paid mints with these limits? (yes/no)' no
   case "$REPLY" in yes|y|Y) ;; *) say 'Key saved. No miner started. Rerun this wizard when ready.'; return ;; esac

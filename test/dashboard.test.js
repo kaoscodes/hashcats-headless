@@ -97,3 +97,18 @@ test('JSON output remains machine-readable and includes the same events as the s
     assert.ok(!output.join('').includes('\x1b'));
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test('multi-GPU dashboard shows per-card rates, failures and a small-terminal overflow indicator',()=>{
+  const state=createState(1000);
+  const gpus=Array.from({length:8},(_,index)=>({index,name:'Identical GPU',hashes:3e10,hashrate:3e9,status:index===1?'FAILED':'MINING'}));
+  event(state,{event:'device',device:'8 Vulkan GPUs',gpus});
+  event(state,{event:'job',target,price:1n,receivedAt:1000},1000);
+  event(state,{event:'progress',hashes:24e10,hashrate:24e9,elapsedSeconds:10,gpus},11000);
+  const full=renderDashboard(state,{now:11000,width:120,height:40});
+  assert.match(full,/GPU 0.*3.00 GH\/s/);
+  assert.match(full,/GPU 1.*FAILED/);
+  assert.match(full,/GPU 7/);
+  const compact=renderDashboard(state,{now:11000,width:80,height:24});
+  assert.match(compact,/enlarge terminal/);
+  assert.ok(compact.split('\n').length<=23);
+});

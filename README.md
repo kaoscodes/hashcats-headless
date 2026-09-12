@@ -33,14 +33,14 @@ curl -fsSL https://raw.githubusercontent.com/kaoscodes/hashcats-headless/main/sc
 
 The download and clone require this repository to be public, or separately configured GitHub access while it is private.
 
-The wizard installs Node.js 22 when needed, Git, tmux, and the Vulkan/EGL runtime dependencies. It clones or updates this repo, installs the pinned npm dependencies, and verifies both GPU kernels before asking for:
+The wizard installs Node.js 22 when needed, Git, tmux, the Vulkan/EGL runtime dependencies, and the compiler/Vulkan headers needed for physical GPU selection. It clones or updates this repo, installs the pinned npm dependencies, and verifies both GPU kernels before asking for:
 
 1. Your private key, entered with terminal echo disabled.
 2. The maximum number of successful mints (default **1**).
 3. Your maximum price **per cat** in ETH, excluding gas (default **0.1**).
 4. Confirmation to start paid mining with the displayed wallet and limits.
 
-It checks live wallet difficulty and mint price, then launches the Vulkan split kernel in a detached **`hashcats`** tmux session. Gas ceilings are 1,000,000 gas and 10 gwei per gas. The wallet must already hold enough ETH on Robinhood Chain for minting and gas.
+It checks live wallet difficulty and mint price, then launches the Vulkan split kernel on **all available GPUs**, coordinated under one wallet in a detached **`hashcats`** tmux session. Gas ceilings are 1,000,000 gas and 10 gwei per gas. The wallet must already hold enough ETH on Robinhood Chain for minting and gas.
 
 ```sh
 tmux attach -t hashcats
@@ -99,7 +99,7 @@ The top of the screen answers the overnight question immediately: **how many cat
 | Confirmed cats / goal | Successful transaction receipts in this run; not lifetime wallet mint history |
 | Proofs found | Valid proofs, including those later discarded or unsuccessfully submitted |
 | Discarded / reverted / unknown TX | Proofs rejected before broadcast, confirmed transaction reversions, and ambiguous broadcast or receipt failures |
-| Current / average hashrate | Recent throughput and the average over the mining loop, including pauses and submission waits |
+| Current / average hashrate | Combined throughput and individual GPU rows; averages include pauses and submission waits |
 | Mean ETA / expected proofs per day | Probability-based estimates using the current wallet target and average hashrate; not a countdown or guaranteed successful mints |
 | ETH balance / mint price | Live chain values; balance refreshes about every 15 seconds and its age is shown |
 | Confirmed spend | Mint price plus gas for confirmed successful transactions in this session; excludes reverted or unknown transactions |
@@ -197,6 +197,45 @@ If broadcasting or receipt tracking fails, the miner stops. Check the recorded t
 
 Actual paid mint execution remains untested. A valid proof can expire or lose a race before execution. Receipt tracking requests one confirmation.
 
+## Native multi-GPU mining
+
+On **Linux/Vulkan**, one command can coordinate all your cards with **one wallet, one mint limit, one submission queue, and one dashboard**:
+
+```sh
+# Ubuntu / RunPod prerequisites (the wizard installs these automatically)
+apt-get update
+apt-get install -y build-essential libvulkan-dev libvulkan1 libegl1
+npm run build:gpu
+
+# List physical GPUs and their Vulkan indices / UUIDs
+node src/cli.js devices --gpus all
+
+# Verify both kernels on every selected card
+node src/cli.js selftest --gpus all
+
+# Mine with the private key already configured in .env
+node src/cli.js mine \
+  --gpus all \
+  --kernel split \
+  --submit \
+  --max-mint-price 0.1 \
+  --max-fee-gwei 10 \
+  --max-gas 1000000 \
+  --max-mints 1
+```
+
+Use `--gpus 0,1` to select a subset. These are **Vulkan indices from `devices --gpus all`**, which may differ from `nvidia-smi` indices. Selection is pinned to physical device UUIDs, so identical model names are supported. Unknown, duplicate, or unacknowledged selections fail instead of silently using another GPU.
+
+Each GPU runs in an isolated hashing worker with its own nonce range. Only the coordinator loads the wallet key and signs transactions. GPU batches run concurrently; the coordinator sizes work for slower cards and combines their measured throughput for the ETA. `--batch-size` is the maximum number of hashes **per GPU** in one coordinated batch.
+
+When several GPUs find proofs for the same round, every candidate is saved and counted. The strongest hash is selected for submission; the other candidates are marked discarded with an explicit reason. `--max-mints` applies to the entire fleet. A GPU failure stops the run with a GPU-specific error; an ambiguous transaction outcome stops the shared submitter without retrying.
+
+The dashboard includes per-GPU current and average rates alongside the aggregate. Enlarge the terminal to show more GPU rows. Detailed JSONL events retain all rows even when the screen is small.
+
+The selector uses a small bundled [Vulkan layer](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md), enabled only in the worker processes. It does not change global GPU drivers. Native helpers are built into the ignored `.native/` directory; `--gpus` builds them on first use if necessary. Plain commands without `--gpus` retain the existing single-adapter Metal/Vulkan/D3D12 behavior. Do not combine `--gpus` with `--adapter` or CPU mode.
+
+**Validation:** coordinator tests cover concurrent work, nonce separation, simultaneous winners, and failures; native tests simulate identically named GPUs with distinct UUIDs. UUID pinning and both kernels were exercised on the available RTX PRO 6000. This pod has only one physical GPU, so multi-card scaling and mixed-card performance still require hardware validation. Actual paid mint execution remains untested.
+
 ## Choose your hardware
 
 | Platform | Backend | Verification status |
@@ -236,7 +275,7 @@ npm run test:gpu
 ```
 
 <details>
-<summary><strong>Adapter selection and multiple GPUs</strong></summary>
+<summary><strong>Legacy single-adapter selection</strong></summary>
 
 `--adapter NAME` selects a Dawn adapter by name. An unmatched name prints the available names:
 
@@ -244,9 +283,9 @@ npm run test:gpu
 node src/cli.js devices --adapter list
 ```
 
-`devices` reports the selected adapter, not an inventory of every card. Run separate processes with different adapter names for multiple cards. Random 224-bit nonce prefixes prevent practical overlap.
+`devices` without `--gpus` reports only the selected adapter. For multiple Linux/Vulkan cards, use the native `--gpus all` mode above; adapter names alone cannot reliably distinguish identical models.
 
-Use one submitting process per wallet to avoid transaction-nonce contention. This version does not coordinate signers between processes.
+Use only one coordinator per wallet. Native multi-GPU workers share its signing queue, but separate independently launched miners do not coordinate transaction nonces.
 
 </details>
 

@@ -36,7 +36,10 @@ export function updateState(s, e, now = Date.now()) {
   const problem = message => {s.lastProblem={time:now,message};add(message);};
   switch(e.event) {
     case 'session': Object.assign(s,{miner:e.miner,submit:e.submit,maxMints:e.maxMints,maxPrice:e.maxPrice,maxAgeMs:e.maxAgeMs});break;
-    case 'device': s.device=e.device ?? e.engine ?? 'CPU';break;
+    case 'device': s.device=e.device ?? e.engine ?? 'CPU';s.gpus=e.gpus;break;
+    case 'gpu-error':
+      s.gpus=s.gpus?.map(gpu=>gpu.index===e.index?{...gpu,status:'FAILED',hashrate:0}:gpu);
+      problem(`GPU ${e.index} failed: ${e.message}`);break;
     case 'job': s.miningAt=now;s.status='MINING'; // falls through
     case 'work': Object.assign(s,{target:e.target,price:e.price,anchorBlock:e.anchorBlock,workAt:e.receivedAt});break;
     case 'wallet': s.balance=e.balance;s.balanceAt=e.receivedAt;s.balanceError=null;break;
@@ -45,6 +48,7 @@ export function updateState(s, e, now = Date.now()) {
     case 'rpc-restored': s.rpcError=null;add('Chain RPC recovered');break;
     case 'progress':
       s.hashes=e.hashes;s.rate=e.hashrate;s.elapsedSeconds=e.elapsedSeconds;s.progressAt=now;
+      if(e.gpus)s.gpus=e.gpus;
       s.status='MINING';break;
     case 'paused': if(s.status!=='PAUSED')s.pauses++;s.status='PAUSED';s.rate=0;problem(`Mining paused: ${e.detail || e.reason}`);break;
     case 'solution': s.found++;s.status=s.submit?'VERIFYING PROOF':'PROOF SAVED';s.lastProof=e.path;add('Valid proof found');break;
@@ -60,6 +64,7 @@ export function updateState(s, e, now = Date.now()) {
       s.spent+=BigInt(e.price??0)+BigInt(e.gasCost??0);add(`Cat #${e.accepted} confirmed: ${e.hash}`);break;
     case 'stopped':
       s.hashes=e.hashes;s.accepted=e.accepted;s.finishedAt=now;s.rate=0;
+      if(e.gpus)s.gpus=e.gpus;
       if(e.elapsedSeconds!==undefined)s.elapsedSeconds=e.elapsedSeconds;
       if(!['MINT REVERTED','TRANSACTION STATUS UNKNOWN','ERROR'].includes(s.status))
         s.status=s.submit&&s.accepted>=s.maxMints?'COMPLETE':!s.submit&&s.found?'PROOF SAVED':'STOPPED';
@@ -109,8 +114,10 @@ export function renderDashboard(s, {now=Date.now(),width=100,height=30}={}) {
   // Reserve the footer, even in a short terminal. Core outcome and failures stay first.
   const footer=[`Log ${s.logPath??'--'}`,s.finishedAt?'Session ended. Review problems and transaction status before restarting.':'Ctrl+C stop  |  tmux: Ctrl+B then D detach  |  Times shown in UTC'];
   const room=Math.max(0,height-footer.length-lines.length);
-  const extra=[`GPU ${s.device??'Initializing...'}`,
-    ...s.history.slice(-Math.max(0,room-1)).map(e=>`${clock(e.time)} ${e.message}`)];
+  const gpuLines=s.gpus?.length?s.gpus.map(gpu=>`GPU ${gpu.index}  ${hashrate(liveRate?gpu.hashrate:0)}  |  ${gpu.status==='FAILED'?'FAILED':s.finishedAt?'STOPPED':liveRate?'MINING':'IDLE'}  |  Avg ${hashrate(elapsed>0?gpu.hashes/elapsed:0)}  |  ${gpu.name}`):[`GPU ${s.device??'Initializing...'}`];
+  const visibleGpus=gpuLines.length>room&&room>0?[...gpuLines.slice(0,room-1),`+ ${gpuLines.length-room+1} GPU(s); enlarge terminal for all rows`]:gpuLines;
+  const extra=[...visibleGpus,
+    ...s.history.slice(-Math.max(0,room-visibleGpus.length)).map(e=>`${clock(e.time)} ${e.message}`)];
   const visible=[...lines,...extra.slice(0,room)].slice(0,Math.max(0,height-footer.length));
   return [...visible,...footer].map(line=>short(line,width)).join('\n');
 }

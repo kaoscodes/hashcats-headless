@@ -82,13 +82,22 @@ export async function mine({engine,chain,miner,account,submit=false,seconds=0,po
       if(key!==jobKey || base>=2**32){jobKey=key;prefix=randomPrefix();base=0;}
       const count=Math.min(batchSize,2**32-base),result=await engine.batch(job,prefix,base,count);
       base+=count;hashes+=result.count;
-      if(performance.now()-lastReport>=1000){const now=performance.now();log({event:'progress',hashes,hashrate:(hashes-lastHashes)*1000/(now-lastReport),elapsedSeconds:(now-start)/1000,anchorBlock:job.anchorBlock});lastReport=now;lastHashes=hashes;}
+      if(performance.now()-lastReport>=1000){const now=performance.now();log({event:'progress',hashes,hashrate:(hashes-lastHashes)*1000/(now-lastReport),elapsedSeconds:(now-start)/1000,anchorBlock:job.anchorBlock,gpus:engine.stats?.()});lastReport=now;lastHashes=hashes;}
       if(signal.aborted)break;
       if(result.nonce===null)continue;
+      // A round can have simultaneous winners on several GPUs. Save every proof,
+      // but submit only the strongest one through this single signing path.
+      for(const extra of result.solutions?.slice(1)??[]) {
+        const extraHash=workHash(job,extra.nonce);
+        if(extraHash!==extra.hash||BigInt(extraHash)>=job.target)throw new Error('Invalid additional GPU proof');
+        const path=await saveArtifact(output,'proof',{...job,...extra,transaction:transaction(job,extra.nonce,chain.contract,chain.chain.id)});
+        log({event:'solution',path,nonce:extra.nonce,hash:extra.hash,gpuIndex:extra.gpuIndex});
+        log({event:'discarded',reason:'Simultaneous GPU proof for the same round; selected the strongest candidate.',gpuIndex:extra.gpuIndex});
+      }
       if(BigInt(workHash(job,result.nonce))>=job.target)throw new Error('Invalid engine proof');
       const proof={...job,nonce:result.nonce,hash:result.hash,transaction:transaction(job,result.nonce,chain.contract,chain.chain.id)};
       const proofPath=await saveArtifact(output,'proof',proof);
-      log({event:'solution',path:proofPath,nonce:result.nonce,hash:result.hash});
+      log({event:'solution',path:proofPath,nonce:result.nonce,hash:result.hash,gpuIndex:result.solutions?.[0]?.gpuIndex});
       if(!submit) return {hashes,accepted,proofPath};
       let prepared;
       try {prepared=await chain.prepare(job,result.nonce,limits);}
@@ -128,6 +137,6 @@ export async function mine({engine,chain,miner,account,submit=false,seconds=0,po
   } finally {
     polling=false;background.abort();signal.removeEventListener('abort',stopBackground);
     await Promise.all([pollPromise,balancePromise]);
-    log({event:'stopped',hashes,accepted,elapsedSeconds:(performance.now()-start)/1000});
+    log({event:'stopped',hashes,accepted,elapsedSeconds:(performance.now()-start)/1000,gpus:engine.stats?.()});
   }
 }

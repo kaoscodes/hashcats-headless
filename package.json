@@ -14,7 +14,8 @@
     "test": "node --test test/*.test.js",
     "test:gpu": "node src/cli.js selftest",
     "benchmark": "node src/cli.js benchmark",
-    "tune": "node scripts/tune.js"
+    "tune": "node scripts/tune.js",
+    "build:gpu": "node scripts/build-vulkan.js"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

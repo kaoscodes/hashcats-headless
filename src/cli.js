@@ -11,6 +11,8 @@ import { selftest, FIXTURE } from './selftest.js';
 import { randomPrefix, json } from './proof.js';
 import { mine } from './miner.js';
 import { createReporter } from './reporter.js';
+import { MultiGpuMiner, selftestGpus } from './multi-gpu.js';
+import { discoverGpus, selectGpus } from './gpu-devices.js';
 try {
   loadEnvFile();
 } catch (error) {
@@ -20,7 +22,7 @@ try {
   }
 }
 const strings=['kernel','engine','backend','adapter','threads','workgroup','per-thread','batch-size','seconds','address','rpc','contract',
-  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output','log-file'];
+  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output','log-file','gpus'];
 const {values:v,positionals}=parseArgs({allowPositionals:true,options:{...Object.fromEntries(strings.map(k=>[k,{type:'string'}])),
   help:{type:'boolean',short:'h'},submit:{type:'boolean'},json:{type:'boolean'},tui:{type:'boolean'},'no-tui':{type:'boolean'}}});
 const command=positionals[0]??'help';
@@ -38,11 +40,12 @@ Compute options:
   --engine gpu|cpu       GPU is default; CPU is an explicit fallback
   --backend NAME        Dawn backend; normally selected automatically
   --adapter NAME        Dawn adapter name, e.g. 'Apple M4 Pro' or NVIDIA name
+  --gpus all|0,1        Linux/Vulkan GPUs by index; one wallet and submission queue
   --threads N           CPU worker count (default: available cores minus one)
   --kernel NAME         interleaved (default) or split Keccak lanes
   --workgroup N         GPU workgroup size: 64 (default), 128, or 256
   --per-thread N        Hashes per GPU invocation (default: 16)
-  --batch-size N        Nonces per batch (GPU: 8388608, CPU: 4096 per worker)
+  --batch-size N        Nonces per GPU batch (8388608); CPU: 4096 per worker
 
 Chain and mining options:
   --rpc URL             Override Robinhood Chain RPC, chain ID remains 4663
@@ -81,14 +84,20 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
     if(v.tui&&(v.json||v['no-tui']))throw new Error('--tui cannot be combined with --json or --no-tui');
     if(v.tui&&command!=='mine')throw new Error('--tui is available for the mine command');
     if(v.engine&&!['gpu','cpu'].includes(v.engine))throw new Error('--engine must be gpu or cpu');
+    if(v.gpus!==undefined&&(process.platform!=='linux'||v.engine==='cpu'||v.adapter||(v.backend&&v.backend!=='vulkan')))
+      throw new Error('--gpus requires Linux/Vulkan GPU mode and cannot be combined with --adapter');
     const threads=integer('threads',Math.max(1,availableParallelism()-1),1,256);
     const options={backend:v.backend,adapter:v.adapter,kernel:v.kernel??'interleaved',workgroup:integer('workgroup',64,64,256),perThread:integer('per-thread',16,1,1024)};
     if(![64,128,256].includes(options.workgroup))throw new Error('--workgroup must be 64, 128 or 256');
     if(v.backend&&!['metal','vulkan','d3d12'].includes(v.backend))throw new Error('--backend must be metal, vulkan or d3d12');
     if(command==='selftest') {
-      for(const kernel of v.kernel?[v.kernel]:['split','interleaved'])await selftest({...options,kernel},log);
+      if(v.gpus!==undefined)await selftestGpus({...options,gpus:v.gpus,kernel:v.kernel},log);
+      else for(const kernel of v.kernel?[v.kernel]:['split','interleaved'])await selftest({...options,kernel},log);
     }
-    else if(command==='devices') {engine=await GpuMiner.create(options);log({event:'device',...engine.info});}
+    else if(command==='devices') {
+      if(v.gpus!==undefined)for(const device of selectGpus(await discoverGpus(),v.gpus))log({event:'gpu',...device});
+      else {engine=await GpuMiner.create(options);log({event:'device',...engine.info});}
+    }
     else if(command==='status') {
       if(!v.address)throw new Error('--address is required');
       const chain=new Chain({rpc:v.rpc,contract:v.contract});await chain.check();
@@ -115,7 +124,7 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
           logFile:v['log-file'],output:v.output??'results'});
         log({event:'session',miner,submit:!!v.submit,maxMints,maxPrice:limits?.maxPrice,maxAgeMs:integer('max-age-ms',3000,500,10000),logPath:reporter.path});
       }
-      engine=cpu?new CpuMiner({threads}):await GpuMiner.create(options);
+      engine=cpu?new CpuMiner({threads}):v.gpus!==undefined?await MultiGpuMiner.create({...options,gpus:v.gpus},log):await GpuMiner.create(options);
       log({event:'device',...engine.info});
       if(command==='benchmark') {
         if(seconds<1)throw new Error('Benchmark --seconds must be positive');
@@ -125,9 +134,9 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
         while(!controller.signal.aborted&&performance.now()-start<seconds*1000){
           const count=Math.min(batchSize,2**32-base);const r=await engine.batch(job,prefix,base,count);hashes+=r.count;base+=count;
           if(base>=2**32){prefix=randomPrefix();base=0;}
-          if(performance.now()-report>=1000){log({event:'benchmark-progress',hashrate:hashes*1000/(performance.now()-start)});report=performance.now();}
+          if(performance.now()-report>=1000){log({event:'benchmark-progress',hashrate:hashes*1000/(performance.now()-start),gpus:engine.stats?.()});report=performance.now();}
         }
-        log({event:'benchmark',hashes,seconds:(performance.now()-start)/1000,hashrate:hashes*1000/(performance.now()-start),batchSize,...options});
+        log({event:'benchmark',hashes,seconds:(performance.now()-start)/1000,hashrate:hashes*1000/(performance.now()-start),batchSize,...options,gpus:engine.stats?.()});
       } else {
         const pollMs=integer('poll-ms',500,100,60000),maxAgeMs=integer('max-age-ms',3000,500,10000);
         if(maxAgeMs<=pollMs)throw new Error('--max-age-ms must exceed --poll-ms');
