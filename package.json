@@ -15,7 +15,9 @@
     "test:gpu": "node src/cli.js selftest",
     "benchmark": "node src/cli.js benchmark",
     "tune": "node scripts/tune.js",
-    "build:gpu": "node scripts/build-vulkan.js"
+    "build:gpu": "node scripts/build-vulkan.js",
+    "build:cuda": "node scripts/build-cuda.js",
+    "test:cuda": "node src/cli.js selftest --engine cuda"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

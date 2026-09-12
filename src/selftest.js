@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { CudaMiner } from './cuda.js';
 import { GpuMiner } from './gpu.js';
 import { MAX256, randomPrefix, nonceAt, workHash } from './proof.js';
 export const FIXTURE={miner:'0x1234567890123456789012345678901234567890',prev:42n,anchor:'0x'+'ab'.repeat(32),target:MAX256};
 export async function selftest(options={}, log=console.log) {
-  const gpu=await GpuMiner.create(options);
+  const gpu=await (options.engine==='cuda'?CudaMiner:GpuMiner).create(options);
   try {
     let checked=0;
     for(const base of [0,255,65535,0xffffff00]) {
@@ -29,5 +30,5 @@ export async function selftest(options={}, log=console.log) {
     checked+=2049;
     log({event:'selftest',kernel:gpu.kernel,ok:true,hashesCompared:checked,boundaryTests:5,device:gpu.info});
     return gpu.info;
-  } finally {gpu.close();}
+  } finally {await gpu.close();}
 }

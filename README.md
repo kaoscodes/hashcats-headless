@@ -25,7 +25,7 @@
 
 ## RunPod: one-command setup
 
-Start an **NVIDIA GPU pod** with an **Ubuntu-based RunPod PyTorch image** (Linux x86_64), then open its root terminal and run:
+Start an **NVIDIA GPU pod** with an **Ubuntu-based RunPod PyTorch CUDA development image with `nvcc`** (Linux x86_64), then open its root terminal and run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kaoscodes/hashcats-headless/main/scripts/runpod.sh -o /tmp/hashcats-runpod.sh && bash /tmp/hashcats-runpod.sh
@@ -33,14 +33,14 @@ curl -fsSL https://raw.githubusercontent.com/kaoscodes/hashcats-headless/main/sc
 
 The download and clone require this repository to be public, or separately configured GitHub access while it is private.
 
-The wizard installs Node.js 22 when needed, Git, tmux, the Vulkan/EGL runtime dependencies, and the compiler/Vulkan headers needed for physical GPU selection. It clones or updates this repo, installs the pinned npm dependencies, and verifies both GPU kernels before asking for:
+The wizard detects NVIDIA GPUs and selects native CUDA. It requires an installed CUDA toolkit (`nvcc`, also detected at `/usr/local/cuda/bin/nvcc`), installs Node.js 22 when needed, Git, tmux, and the C++ build tools, then clones or updates this repo and installs the pinned npm dependencies. It builds the CUDA miner and verifies it on every visible CUDA GPU before asking for:
 
 1. Your private key, entered with terminal echo disabled.
 2. The maximum number of successful mints (default **1**).
 3. Your maximum price **per cat** in ETH, excluding gas (default **0.1**).
 4. Confirmation to start paid mining with the displayed wallet and limits.
 
-It checks live wallet difficulty and mint price, then launches the Vulkan split kernel on **all available GPUs**, coordinated under one wallet in a detached **`hashcats`** tmux session. Gas ceilings are 1,000,000 gas and 10 gwei per gas. The wallet must already hold enough ETH on Robinhood Chain for minting and gas.
+It checks live wallet difficulty and mint price, then launches the native CUDA kernel on **all visible CUDA GPUs**, coordinated under one wallet in a detached **`hashcats`** tmux session. Gas ceilings are 1,000,000 gas and 10 gwei per gas. The wallet must already hold enough ETH on Robinhood Chain for minting and gas.
 
 ```sh
 tmux attach -t hashcats
@@ -57,6 +57,8 @@ To choose another install directory or session name:
 ```sh
 HASHCATS_DIR=/workspace/my-miner HASHCATS_SESSION=my-miner bash /tmp/hashcats-runpod.sh
 ```
+
+If NVIDIA detection, CUDA compiler checks, the build, or GPU verification fails, setup stops before requesting a key or starting mining. Use a CUDA development image if `nvcc` is missing; the wizard does not fall back to Vulkan. `NVCC=/path/to/nvcc` and `CUDA_ARCH=sm_120` can override the compiler and build architecture. `CUDA_VISIBLE_DEVICES` restricts the selected GPUs and is preserved in the generated runner.
 
 The installer accepts a clean `main` checkout of this repository and updates it with a fast-forward pull. It leaves local changes and other repositories alone. NVIDIA kernel drivers and GPU device access must come from the pod runtime; the installer does not replace them.
 
@@ -139,6 +141,30 @@ These are short measurements on one pod, not guaranteed sustained rates or mint 
 
 Earlier Apple M4 Pro measurements reached approximately **430–470 MH/s** in short tuning sweeps. Alternating kernel comparisons measured 320→428 MH/s and 256→329 MH/s as overall throughput changed. Two CPU workers measured approximately **0.89 MH/s**. These runs used different hardware and conditions and are not a controlled comparison with the NVIDIA results.
 
+## Native CUDA (NVIDIA)
+
+A CUDA C++ backend is available through `--engine cuda`. It runs Keccak-f[1600] with native 64-bit lanes in a persistent hashing process, with independent CPU verification of every winner. Node.js continues to manage chain snapshots, the dashboard, and submission.
+
+Build with an installed CUDA toolkit (`nvcc`) and a compatible C++ compiler:
+
+```sh
+npm run build:cuda
+npm run test:cuda
+node src/cli.js devices --engine cuda
+node src/cli.js benchmark --engine cuda --seconds 30
+node src/cli.js mine --engine cuda --address 0xYOUR_WALLET_ADDRESS
+```
+
+The build defaults to `-arch=native`, targeting GPUs visible at build time. Rebuild when moving to different hardware, or specify an architecture supported by your toolkit, for example `CUDA_ARCH=sm_120 npm run build:cuda` for the tested Blackwell card. `NVCC=/path/to/nvcc` overrides the compiler. The executable is stored in `.native/cuda-miner`; CUDA does not require WebGPU or Vulkan at runtime. The current build and backend have been tested on Linux with CUDA 12.8 and NVIDIA driver 580.173.02.
+
+CUDA supports **all visible GPUs under one coordinator** with `--engine cuda --gpus all`, or a subset with `--gpus 0,1`. Device selection is verified against CUDA UUIDs; each GPU has its own hashing process and nonce range, sharing one wallet, dashboard, mint limit, and submission queue. Ordinals respect `CUDA_VISIBLE_DEVICES` and are separate from Vulkan indices. Use `devices --engine cuda --gpus all` to list them. Without `--gpus`, CUDA selects one device with `--cuda-device 0` (the default). Do not combine `--gpus` with `--cuda-device`.
+
+The RunPod wizard launches `--engine cuda --gpus all --kernel native`. CUDA fleet discovery, self-test, and benchmarking have been exercised on the available single GPU; multiple-card coordination is covered by software tests, but multi-card hardware scaling remains untested. Use one coordinator per wallet.
+
+CUDA accepts `--workgroup 64|128|256` (default **128**) and `--per-thread 1..1024` (default **16**). Its kernel is `native`; omit `--kernel` or pass `--kernel native`. Do not combine CUDA with `--backend` or `--adapter`. Existing mint and gas limits also apply when adding `--engine cuda` to a submission command.
+
+On the RTX PRO 6000 Blackwell Server Edition, consecutive 15-second runs with 8,388,608 hashes per batch measured **5.99 GH/s CUDA** versus **3.36 GH/s Vulkan split**, about **78% higher throughput**. These are short single-card measurements, not sustained-performance guarantees. CUDA passed 3,082 independent CPU/GPU hash comparisons and five strict target-boundary checks. Paid minting through CUDA has not been tested.
+
 ## Automatic minting
 
 The miner derives your wallet address from its private key. The wallet needs enough **ETH on Robinhood Chain** for the mint and gas.
@@ -202,7 +228,7 @@ Actual paid mint execution remains untested. A valid proof can expire or lose a 
 On **Linux/Vulkan**, one command can coordinate all your cards with **one wallet, one mint limit, one submission queue, and one dashboard**:
 
 ```sh
-# Ubuntu / RunPod prerequisites (the wizard installs these automatically)
+# Ubuntu prerequisites for the optional Vulkan backend
 apt-get update
 apt-get install -y build-essential libvulkan-dev libvulkan1 libegl1
 npm run build:gpu
@@ -232,7 +258,7 @@ When several GPUs find proofs for the same round, every candidate is saved and c
 
 The dashboard includes per-GPU current and average rates alongside the aggregate. Enlarge the terminal to show more GPU rows. Detailed JSONL events retain all rows even when the screen is small.
 
-The selector uses a small bundled [Vulkan layer](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md), enabled only in the worker processes. It does not change global GPU drivers. Native helpers are built into the ignored `.native/` directory; `--gpus` builds them on first use if necessary. Plain commands without `--gpus` retain the existing single-adapter Metal/Vulkan/D3D12 behavior. Do not combine `--gpus` with `--adapter` or CPU mode.
+The selector uses a small bundled [Vulkan layer](https://github.com/KhronosGroup/Vulkan-Loader/blob/main/docs/LoaderLayerInterface.md), enabled only in the worker processes. It does not change global GPU drivers. Native helpers are built into the ignored `.native/` directory; `--gpus` builds them on first use if necessary. Plain commands without `--gpus` retain the existing single-adapter Metal/Vulkan/D3D12 behavior. Do not combine `--gpus` with `--adapter` or CPU mode. For the CUDA fleet used by the RunPod wizard, see [Native CUDA](#native-cuda-nvidia).
 
 **Validation:** coordinator tests cover concurrent work, nonce separation, simultaneous winners, and failures; native tests simulate identically named GPUs with distinct UUIDs. UUID pinning and both kernels were exercised on the available RTX PRO 6000. This pod has only one physical GPU, so multi-card scaling and mixed-card performance still require hardware validation. Actual paid mint execution remains untested.
 
@@ -241,7 +267,7 @@ The selector uses a small bundled [Vulkan layer](https://github.com/KhronosGroup
 | Platform | Backend | Verification status |
 | :--- | :--- | :--- |
 | Apple Silicon | `metal` | Tested on Apple M4 Pro |
-| NVIDIA / Linux | `vulkan` | Tested on RTX PRO 6000 Blackwell |
+| NVIDIA / Linux | `vulkan` or `--engine cuda` | Tested on RTX PRO 6000 Blackwell |
 | NVIDIA / Windows | `d3d12` | Implemented; not hardware-tested here |
 | CPU | `--engine cpu` | Worker-thread fallback for diagnostics and portability |
 

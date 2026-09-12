@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { loadEnvFile } from 'node:process';
 import { getAddress, parseEther, parseGwei } from 'viem';
 import { GpuMiner } from './gpu.js';
+import { createCudaFleet, selftestCudaGpus } from './multi-cuda.js';
+import { CudaMiner, discoverCudaGpus } from './cuda.js';
 import { CpuMiner } from './cpu.js';
 import { Chain } from './chain.js';
 import { selftest, FIXTURE } from './selftest.js';
@@ -22,12 +24,12 @@ try {
   }
 }
 const strings=['kernel','engine','backend','adapter','threads','workgroup','per-thread','batch-size','seconds','address','rpc','contract',
-  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output','log-file','gpus'];
+  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output','log-file','gpus','cuda-device'];
 const {values:v,positionals}=parseArgs({allowPositionals:true,options:{...Object.fromEntries(strings.map(k=>[k,{type:'string'}])),
   help:{type:'boolean',short:'h'},submit:{type:'boolean'},json:{type:'boolean'},tui:{type:'boolean'},'no-tui':{type:'boolean'}}});
 const command=positionals[0]??'help';
 if(v.help||command==='help') {
-  console.log(`Hashcats headless miner, native WebGPU (no browser)
+  console.log(`Hashcats headless miner, native WebGPU / CUDA (no browser)
 
   node src/cli.js devices [--backend metal|vulkan|d3d12] [--adapter NAME]
   node src/cli.js selftest [GPU options]
@@ -37,13 +39,14 @@ if(v.help||command==='help') {
   node src/cli.js mine --submit --key-file /secure/key --max-mint-price 0.1
 
 Compute options:
-  --engine gpu|cpu       GPU is default; CPU is an explicit fallback
+  --engine gpu|cuda|cpu  WebGPU is default; CUDA uses the native NVIDIA kernel
+  --cuda-device N       CUDA device ordinal (default: 0; respects CUDA_VISIBLE_DEVICES)
   --backend NAME        Dawn backend; normally selected automatically
   --adapter NAME        Dawn adapter name, e.g. 'Apple M4 Pro' or NVIDIA name
-  --gpus all|0,1        Linux/Vulkan GPUs by index; one wallet and submission queue
+  --gpus all|0,1        All/subset of Vulkan or CUDA GPUs; one wallet and submission queue
   --threads N           CPU worker count (default: available cores minus one)
-  --kernel NAME         interleaved (default) or split Keccak lanes
-  --workgroup N         GPU workgroup size: 64 (default), 128, or 256
+  --kernel NAME         interleaved (default) or split; CUDA: native
+  --workgroup N         GPU workgroup size: 64, 128, or 256 (CUDA default: 128; WebGPU: 64)
   --per-thread N        Hashes per GPU invocation (default: 16)
   --batch-size N        Nonces per GPU batch (8388608); CPU: 4096 per worker
 
@@ -65,7 +68,7 @@ Chain and mining options:
   --no-tui              Use scrolling event output instead of the dashboard
   --log-file PATH       Detailed mining JSONL log (default: results/miner-*.jsonl)
 
-Run npm test and npm run test:gpu before mining on a new machine.`);
+Run npm test and npm run test:gpu (or test:cuda) before mining on a new machine.`);
 } else {
   let reporter;
   const log=o=>reporter?reporter.log(o):console.log(v.json?json(o):Object.entries(o).map(([k,x])=>`${k}=${typeof x==='object'?json(x):x}`).join(' '));
@@ -83,20 +86,25 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
     if(!['devices','selftest','benchmark','status','mine'].includes(command))throw new Error(`Unknown command: ${command}`);
     if(v.tui&&(v.json||v['no-tui']))throw new Error('--tui cannot be combined with --json or --no-tui');
     if(v.tui&&command!=='mine')throw new Error('--tui is available for the mine command');
-    if(v.engine&&!['gpu','cpu'].includes(v.engine))throw new Error('--engine must be gpu or cpu');
-    if(v.gpus!==undefined&&(process.platform!=='linux'||v.engine==='cpu'||v.adapter||(v.backend&&v.backend!=='vulkan')))
+    if(v.engine&&!['gpu','cpu','cuda'].includes(v.engine))throw new Error('--engine must be gpu, cuda or cpu');
+    const cuda=v.engine==='cuda';
+    if(cuda&&(v.backend||v.adapter))throw new Error('CUDA does not use --backend or --adapter');
+    if(cuda&&v.gpus!==undefined&&v['cuda-device']!==undefined)throw new Error('Use either --gpus or --cuda-device');
+    if(!cuda&&v['cuda-device']!==undefined)throw new Error('--cuda-device requires --engine cuda');
+    if(!cuda&&v.gpus!==undefined&&(process.platform!=='linux'||v.engine==='cpu'||v.adapter||(v.backend&&v.backend!=='vulkan')))
       throw new Error('--gpus requires Linux/Vulkan GPU mode and cannot be combined with --adapter');
     const threads=integer('threads',Math.max(1,availableParallelism()-1),1,256);
-    const options={backend:v.backend,adapter:v.adapter,kernel:v.kernel??'interleaved',workgroup:integer('workgroup',64,64,256),perThread:integer('per-thread',16,1,1024)};
+    const options={engine:v.engine,device:integer('cuda-device',0,0,255),backend:v.backend,adapter:v.adapter,kernel:v.kernel??(cuda?'native':'interleaved'),workgroup:integer('workgroup',cuda?128:64,64,256),perThread:integer('per-thread',16,1,1024)};
     if(![64,128,256].includes(options.workgroup))throw new Error('--workgroup must be 64, 128 or 256');
     if(v.backend&&!['metal','vulkan','d3d12'].includes(v.backend))throw new Error('--backend must be metal, vulkan or d3d12');
     if(command==='selftest') {
-      if(v.gpus!==undefined)await selftestGpus({...options,gpus:v.gpus,kernel:v.kernel},log);
-      else for(const kernel of v.kernel?[v.kernel]:['split','interleaved'])await selftest({...options,kernel},log);
+      if(cuda&&v.gpus!==undefined)await selftestCudaGpus({...options,gpus:v.gpus},log);
+      else if(v.gpus!==undefined)await selftestGpus({...options,gpus:v.gpus,kernel:v.kernel},log);
+      else for(const kernel of v.kernel?[v.kernel]:cuda?['native']:['split','interleaved'])await selftest({...options,kernel},log);
     }
     else if(command==='devices') {
-      if(v.gpus!==undefined)for(const device of selectGpus(await discoverGpus(),v.gpus))log({event:'gpu',...device});
-      else {engine=await GpuMiner.create(options);log({event:'device',...engine.info});}
+      if(v.gpus!==undefined)for(const device of selectGpus(await (cuda?discoverCudaGpus:discoverGpus)(),v.gpus,cuda?'CUDA':'Vulkan'))log({event:'gpu',...device});
+      else {engine=await (cuda?CudaMiner:GpuMiner).create(options);log({event:'device',...engine.info});}
     }
     else if(command==='status') {
       if(!v.address)throw new Error('--address is required');
@@ -124,7 +132,7 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
           logFile:v['log-file'],output:v.output??'results'});
         log({event:'session',miner,submit:!!v.submit,maxMints,maxPrice:limits?.maxPrice,maxAgeMs:integer('max-age-ms',3000,500,10000),logPath:reporter.path});
       }
-      engine=cpu?new CpuMiner({threads}):v.gpus!==undefined?await MultiGpuMiner.create({...options,gpus:v.gpus},log):await GpuMiner.create(options);
+      engine=cpu?new CpuMiner({threads}):cuda?(v.gpus!==undefined?await createCudaFleet({...options,gpus:v.gpus},log):await CudaMiner.create(options)):v.gpus!==undefined?await MultiGpuMiner.create({...options,gpus:v.gpus},log):await GpuMiner.create(options);
       log({event:'device',...engine.info});
       if(command==='benchmark') {
         if(seconds<1)throw new Error('Benchmark --seconds must be positive');

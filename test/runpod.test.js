@@ -69,6 +69,8 @@ exit 23
   const r = shell(`
     INSTALL_DIR=${quote(checkout)}
     STATE_DIR=${quote(state)}
+    export CUDA_VISIBLE_DEVICES=1,0
+    unset CUDA_DEVICE_ORDER
     write_runner ${quote(runner)} ${quote(fakeNode)} ${quote(join(state,'miner.key'))} 7 0.125
   `);
   assert.equal(r.status,0,r.stderr);
@@ -77,7 +79,11 @@ exit 23
   assert.equal(started.status,23,started.stderr);
   assert.match(started.stdout,/--max-mints\n7/);
   assert.match(started.stdout,/--tui/);
+  assert.match(started.stdout,/--engine\ncuda\n--gpus\nall\n--kernel\nnative/);
+  assert.ok(!started.stdout.includes('--backend'));
   assert.ok(!readFileSync(runner,'utf8').includes('tee'));
+  assert.match(readFileSync(runner,'utf8'),/export CUDA_VISIBLE_DEVICES=1\\?,0/);
+  assert.match(readFileSync(runner,'utf8'),/unset CUDA_DEVICE_ORDER/);
   assert.match(started.stdout,/--max-mint-price\n0\.125/);
   assert.match(started.stdout,/No automatic restart/);
   assert.equal(started.stdout.split('mock-miner-failure').length-1,1);
@@ -86,7 +92,7 @@ exit 23
   assert.equal(statSync(log).mode & 0o777,0o600);
 }));
 
-for (const scenario of ['start', 'decline', 'gpu-failure', 'existing-session']) {
+for (const scenario of ['start', 'decline', 'gpu-failure', 'build-failure', 'no-gpu', 'compiler-failure', 'existing-session']) {
   test(`RunPod wizard orchestration: ${scenario} (mock system services, no mining)`, {skip: process.getuid?.() !== 0}, () => fixture(dir => {
     const input = join(dir,'input');
     const trace = join(dir,'trace');
@@ -100,7 +106,9 @@ for (const scenario of ['start', 'decline', 'gpu-failure', 'existing-session']) 
       eval "$(declare -f main | sed 's@exec 3< /dev/tty 4> /dev/tty@exec 3< ${input} 4> ${join(dir,'prompts')}@')"
       record() { printf '%s\\n' "$*" >> ${quote(trace)}; }
       uname() { [[ "$1" == -s ]] && echo Linux || echo x86_64; }
-      nvidia-smi() { record gpu-detected; }
+      nvidia-smi() { record gpu-detected; [[ ${quote(scenario)} == no-gpu ]] || echo 'NVIDIA test GPU, 580'; }
+      NVCC=mock_nvcc
+      mock_nvcc() { record nvcc; [[ ${quote(scenario)} != compiler-failure ]]; }
       apt-get() { record apt; }
       flock() { :; }
       install_node() { record node-installed; }
@@ -109,7 +117,7 @@ for (const scenario of ['start', 'decline', 'gpu-failure', 'existing-session']) 
         [[ "$1" == clone ]] || return 1
         mkdir -p "$INSTALL_DIR/.git"
       }
-      npm() { record "npm $*"; }
+      npm() { record "npm $*"; [[ ${quote(scenario)} != build-failure || "$*" != 'run build:cuda' ]]; }
       node() {
         if [[ "$1" == --input-type=module ]]; then
           (cd ${quote(root)} && ${quote(process.execPath)} "$@")
@@ -128,15 +136,26 @@ for (const scenario of ['start', 'decline', 'gpu-failure', 'existing-session']) 
     if (scenario === 'gpu-failure') {
       assert.notEqual(r.status,0);
       assert.match(r.stderr,/GPU verification failed/);
+    } else if (['build-failure','no-gpu','compiler-failure'].includes(scenario)) {
+      assert.notEqual(r.status,0);
+      assert.match(r.stderr,/CUDA build failed|No NVIDIA GPUs detected|CUDA compiler check failed/);
     } else {
       assert.equal(r.status,0,r.stderr);
     }
     if (scenario === 'start') {
       assert.match(events,/node src\/cli.js status --address 0x/);
       assert.match(events,/tmux new-session/);
+      assert.match(events,/npm run build:cuda/);
+      assert.match(events,/node src\/cli.js selftest --engine cuda --gpus all/);
+      assert.ok(!events.includes('build:gpu')&&!events.includes('--backend vulkan'));
+      assert.match(readFileSync(join(dir,'checkout/.runpod/start-miner.sh'),'utf8'),/--engine cuda --gpus all --kernel native/);
       assert.match(readFileSync(join(dir,'checkout/.runpod/start-miner.sh'),'utf8'),/--max-mints 2/);
     } else {
       assert.ok(!events.includes('tmux new-session'));
+    }
+    if (['gpu-failure','build-failure','no-gpu','compiler-failure'].includes(scenario)) {
+      assert.ok(!events.includes('status --address'));
+      assert.ok(!readFileSync(join(dir,'prompts'),'utf8').includes('Private key'));
     }
     if (scenario === 'existing-session') assert.ok(!events.includes('npm'));
     assert.ok(!r.stdout.includes(dummyKey) && !r.stderr.includes(dummyKey) && !events.includes(dummyKey));

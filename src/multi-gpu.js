@@ -12,10 +12,10 @@ export class MultiGpuMiner {
     if(failed){await Promise.all(workers.map(w=>w.close()));throw failed.reason;}
     return new MultiGpuMiner(workers,devices,log);
   }
-  constructor(workers,devices,log=()=>{}) {
+  constructor(workers,devices,log=()=>{},backend='Vulkan') {
     this.workers=workers;this.log=log;this.busy=false;
     this.rows=devices.map(d=>({...d,hashes:0,hashrate:0,status:'READY'}));
-    this.info={device:`${devices.length} Vulkan GPU${devices.length===1?'':'s'}`,gpus:this.rows};
+    this.info={device:`${devices.length} ${backend} GPU${devices.length===1?'':'s'}`,gpus:this.rows};
   }
   stats(){return this.rows.map(row=>({...row}));}
   async batch(job,prefix,base,count) {

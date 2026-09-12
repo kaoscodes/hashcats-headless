@@ -61,6 +61,20 @@ install_node() {
   TEMP_DIR=
 }
 
+check_cuda_compiler() {
+  if [[ -n ${NVCC:-} ]]; then
+    command -v "$NVCC" >/dev/null || die 'NVCC does not point to a CUDA compiler.'
+  elif command -v nvcc >/dev/null; then
+    NVCC=$(command -v nvcc)
+  elif [[ -x /usr/local/cuda/bin/nvcc ]]; then
+    NVCC=/usr/local/cuda/bin/nvcc
+  else
+    die 'NVIDIA GPU detected, but nvcc is missing. Use a RunPod CUDA devel image (with the CUDA toolkit), or install a compatible toolkit and set NVCC=/path/to/nvcc. No miner was started.'
+  fi
+  export NVCC
+  "$NVCC" --version || die 'CUDA compiler check failed. No miner was started.'
+}
+
 configure_key() {
   local key_file=$1
   if [[ -f "$key_file" ]]; then
@@ -103,9 +117,15 @@ write_runner() {
   {
     printf '#!/usr/bin/env bash\nset -uo pipefail\numask 077\n'
     printf 'cd %q || exit 1\n' "$INSTALL_DIR"
+    # A pre-existing tmux server may have a different GPU visibility environment.
+    local variable
+    for variable in CUDA_VISIBLE_DEVICES CUDA_DEVICE_ORDER LD_LIBRARY_PATH; do
+      if [[ -v $variable ]]; then printf 'export %s=%q\n' "$variable" "${!variable}"
+      else printf 'unset %s\n' "$variable"; fi
+    done
     printf 'log=%q/miner-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$$.jsonl\n' "$STATE_DIR"
     printf 'printf "Mining log: %%s\\n" "$log"\n'
-    printf '%q src/cli.js mine --backend vulkan --gpus all --kernel split --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q --tui --log-file "$log"\n' \
+    printf '%q src/cli.js mine --engine cuda --gpus all --kernel native --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q --tui --log-file "$log"\n' \
       "$node_bin" "$key_file" "$max_price" "$max_mints"
     printf 'status=$?\n'
     printf 'printf "\\nMiner exited with status %%s. No automatic restart.\\n" "$status"\n'
@@ -123,11 +143,14 @@ Hashcats RunPod wizard (Ubuntu/PyTorch, NVIDIA x86_64)
   bash scripts/runpod.sh
 
 Installs dependencies, clones/updates the public repo, tests the GPU, prompts
-for a private key and mint limits, then starts a detached tmux session.
+for a private key and mint limits, then starts CUDA on all visible GPUs in tmux.
+Requires a CUDA development image with nvcc; no Vulkan fallback.
 
 Optional environment variables:
   HASHCATS_DIR       Checkout directory (default /workspace/hashcats-headless)
   HASHCATS_SESSION   tmux session name (default hashcats)
+  NVCC              CUDA compiler path (auto-detected)
+  CUDA_ARCH         nvcc architecture (default native)
 
 Keys and logs live in the checkout's ignored .runpod/ directory. The wizard
 never prints the key, installs kernel drivers, or restarts a failed miner.
@@ -144,12 +167,17 @@ HELP
   say 'Hashcats / RunPod setup'
   if command -v tmux >/dev/null && session_exists; then show_session; return; fi
   command -v nvidia-smi >/dev/null || die 'No NVIDIA runtime detected. Use a GPU pod with NVIDIA drivers exposed.'
-  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+  local nvidia_gpus
+  nvidia_gpus=$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader) || die 'NVIDIA GPU detection failed. Check the pod runtime.'
+  [[ -n ${nvidia_gpus//[[:space:]]/} ]] || die 'No NVIDIA GPUs detected. Use an NVIDIA GPU pod.'
+  printf '%s\n' "$nvidia_gpus"
+  say 'NVIDIA GPUs detected. Selecting native CUDA on all visible devices.'
+  check_cuda_compiler
 
   say 'Installing system dependencies…'
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq ca-certificates curl git xz-utils tmux libegl1 libvulkan1 util-linux build-essential libvulkan-dev
+  apt-get install -y -qq ca-certificates curl git xz-utils tmux util-linux build-essential
   # Serialize setup, including any writes to saved credentials and runner files.
   exec 9>/tmp/hashcats-runpod-setup.lock
   flock -n 9 || die 'Another Hashcats installer is already running.'
@@ -171,11 +199,11 @@ HELP
   fi
   cd "$INSTALL_DIR"
   npm ci
-  npm run build:gpu
-  say 'Checking software and both GPU kernels…'
+  npm run build:cuda || die 'CUDA build failed. Use a toolkit compatible with your GPU and driver; no miner was started.'
+  say 'Checking software and CUDA on every visible GPU…'
   npm test
-  node src/cli.js devices --backend vulkan --gpus all
-  node src/cli.js selftest --backend vulkan --gpus all || die 'GPU verification failed. Check GPU access and Vulkan driver libraries; no miner was started.'
+  node src/cli.js devices --engine cuda --gpus all
+  node src/cli.js selftest --engine cuda --gpus all || die 'GPU verification failed. Check CUDA GPU access and toolkit/driver compatibility; no miner was started.'
 
   STATE_DIR="$INSTALL_DIR/.runpod"
   mkdir -p "$STATE_DIR"
@@ -207,7 +235,7 @@ HELP
   node src/cli.js status --address "$address"
   say 'Ready to start'
   printf 'Wallet: %s\nMint limit: %s\nPrice ceiling: %s ETH per cat, plus gas\n' "$address" "$max_mints" "$max_price"
-  printf 'Gas ceilings: 1,000,000 gas / 10 gwei per gas\nGPU: all available Vulkan GPUs / split kernel\nSession: %s\n' "$SESSION"
+  printf 'Gas ceilings: 1,000,000 gas / 10 gwei per gas\nGPU: all visible CUDA GPUs / native kernel\nSession: %s\n' "$SESSION"
   printf 'Key file: %s (mode 600)\n' "$key_file"
   prompt 'Start mining and submit paid mints with these limits? (yes/no)' no
   case "$REPLY" in yes|y|Y) ;; *) say 'Key saved. No miner started. Rerun this wizard when ready.'; return ;; esac

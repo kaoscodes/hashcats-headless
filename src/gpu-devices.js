@@ -32,14 +32,14 @@ export async function discoverGpus() {
   }
   return devices;
 }
-export function selectGpus(devices,selection='all') {
+export function selectGpus(devices,selection='all',backend='Vulkan') {
   if(selection==='all')return devices;
-  if(!/^\d+(,\d+)*$/.test(selection))throw new Error('--gpus must be all or comma-separated Vulkan indices, such as 0,1');
+  if(!/^\d+(,\d+)*$/.test(selection))throw new Error(`--gpus must be all or comma-separated ${backend} indices, such as 0,1`);
   const indices=selection.split(',').map(Number);
   if(new Set(indices).size!==indices.length)throw new Error('--gpus contains a duplicate GPU index');
   return indices.map(index=>{
     const device=devices.find(d=>d.index===index);
-    if(!device)throw new Error(`GPU ${index} is unavailable. Run devices --gpus all to list Vulkan indices.`);
+    if(!device)throw new Error(`GPU ${index} is unavailable. Run devices --gpus all to list ${backend} indices.`);
     return device;
   });
 }
