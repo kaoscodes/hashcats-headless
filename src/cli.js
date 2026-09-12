@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import { availableParallelism } from 'node:os';
 import { readFile } from 'node:fs/promises';
+import { loadEnvFile } from 'node:process';
 import { getAddress, parseEther, parseGwei } from 'viem';
 import { GpuMiner } from './gpu.js';
 import { CpuMiner } from './cpu.js';
@@ -9,6 +10,14 @@ import { Chain } from './chain.js';
 import { selftest, FIXTURE } from './selftest.js';
 import { randomPrefix, json } from './proof.js';
 import { mine } from './miner.js';
+try {
+  loadEnvFile();
+} catch (error) {
+  if (error.code !== 'ENOENT') {
+    console.error(json({event:'error',message:'Could not load .env from the current working directory.'}));
+    process.exit(1);
+  }
+}
 const strings=['kernel','engine','backend','adapter','threads','workgroup','per-thread','batch-size','seconds','address','rpc','contract',
   'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output'];
 const {values:v,positionals}=parseArgs({allowPositionals:true,options:{...Object.fromEntries(strings.map(k=>[k,{type:'string'}])),

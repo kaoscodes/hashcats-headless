@@ -94,7 +94,7 @@ On the available Apple M4 Pro, the initial 5-second GPU benchmark measured appro
 
 The benchmark uses a zero target so no winning nonce causes early exit or repeated CPU verification. The hash input and target are runtime storage-buffer data, and the hash loop is the same one used for live mining. Short measurements are affected by temperature, power mode, and other GPU use.
 
-Native Dawn supports the Metal, Vulkan, and D3D12 backends used here. See the [Dawn Node documentation](https://github.com/dawn-gpu/node-webgpu). Metal compute, independent hash comparisons, live contract hash calls, live job refresh, duration limits, CPU workers, offline signing, and SIGINT shutdown were tested. No private wallet was supplied and no paid transaction was broadcast. NVIDIA throughput, driver compatibility, and an actual successful mint remain hardware/account-dependent validation steps.
+Native Dawn supports the Metal, Vulkan, and D3D12 backends used here. See the [Dawn Node documentation](https://github.com/dawn-gpu/node-webgpu). Metal compute, independent hash comparisons, live contract hash calls, live job refresh, duration limits, CPU workers, offline signing, and SIGINT shutdown were tested. No private wallet was supplied and no paid transaction was broadcast. NVIDIA Vulkan correctness and throughput were subsequently verified on an RTX PRO 6000 Blackwell Server Edition pod with driver 580.173.02; see the README for measurements and the required libegl1 dependency. An actual successful paid mint remains untested.
 
 ## Optimization follow-up
 

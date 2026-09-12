@@ -1,38 +1,101 @@
-# Hashcats headless miner
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="Hashcats — Mine from the terminal. Native WebGPU. CPU-verified proofs." width="100%" />
+</p>
 
-A standalone miner for [hashcats.fun/mine](https://hashcats.fun/mine). Node.js controls native Dawn WebGPU compute. It needs no browser, canvas, wallet extension, X server, or virtual display.
+<p align="center">
+  <strong>A standalone GPU miner for <a href="https://hashcats.fun/mine">Hashcats</a> on Robinhood Chain.</strong><br />
+  Node.js orchestration. Native GPU compute. No browser or wallet extension required.
+</p>
 
-The WGSL kernel runs through Metal on Apple Silicon, Vulkan on NVIDIA/Linux, or D3D12 on NVIDIA/Windows. Apple M4 Pro is tested locally. NVIDIA paths are implemented through Dawn but have not been tested on NVIDIA hardware here.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#performance">Performance</a> ·
+  <a href="#automatic-minting">Automatic minting</a> ·
+  <a href="docs/protocol.md">Protocol notes</a>
+</p>
 
-## Run
+---
 
-Use Node.js 22 or newer and the platform's hardware GPU driver.
+## Built to run headless
+
+| Native compute | Verified work | Controlled submission |
+| :--- | :--- | :--- |
+| Dawn WebGPU runs WGSL directly through Metal, Vulkan, or D3D12. | Every GPU winner is independently hashed on the CPU. | Explicit mint and gas ceilings, simulation, and a transaction journal before broadcast. |
+
+## Quick start
+
+Use **Node.js 22+** and a hardware GPU driver.
 
 ```sh
+git clone https://github.com/kaoscodes/hashcats-headless.git
+cd hashcats-headless
 npm ci
 npm test
 node src/cli.js devices
 npm run test:gpu
-node src/cli.js benchmark --seconds 10
+node src/cli.js benchmark --seconds 30
 ```
 
-Mine for your wallet address and save the first proof, without signing or paying:
+Start a proof-only run for your public wallet address:
 
 ```sh
 node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS
 ```
 
-Add `--seconds 60` for a bounded run. Stop with Ctrl-C or SIGTERM. Use `--json` for JSON lines suitable for logging. Successful proofs go into `results/` with the nonce, original anchor block, hash input, and unsigned transaction. A proof expires quickly, so manual submission is usually impractical.
+This saves the first proof to `results/` without signing or paying. Add `--seconds 60` for a bounded run, `--json` for structured logs, or stop with **Ctrl-C**. Proofs include the nonce, original anchor block, hash input, and unsigned transaction. They expire quickly, so manual submission is usually impractical.
 
-Read current wallet difficulty, mint price, and anchor without starting the GPU:
+Read wallet difficulty, mint price, and the current anchor without starting the GPU:
 
 ```sh
 node src/cli.js status --address 0xYOUR_WALLET_ADDRESS
 ```
 
-## Paid minting
+## Performance
 
-For automatic submission, provide a file containing a `0x`-prefixed private key. Restrict that file to your user. The key's address must hold enough ETH on Robinhood Chain to cover the mint and gas. The miner derives its address from that key.
+Measured on an **NVIDIA RTX PRO 6000 Blackwell Server Edition**, using Vulkan and NVIDIA driver `580.173.02`:
+
+| Workload | Kernel | Measured hashrate | Duration |
+| :--- | :--- | ---: | ---: |
+| GPU benchmark | Interleaved (default) | **3.29 GH/s** | 30 seconds |
+| GPU benchmark | Split | **3.41 GH/s** | 30 seconds |
+| Live proof-only mining | Interleaved | **~3.18 GH/s** | 15 seconds |
+
+Both kernels passed 3,082 independent CPU/GPU hash comparisons and five target-boundary checks each. Live RPC access and the contract's `workHash` verification also passed. The live run processed 47.74 billion hashes; it found no proof and submitted no transaction.
+
+These are short measurements on one pod, not guaranteed sustained rates or mint frequency. Wallet difficulty, changing chain state, and submission timing affect results. Split was slightly faster in this comparison; benchmark both kernels on your hardware.
+
+Earlier Apple M4 Pro measurements reached approximately **430–470 MH/s** in short tuning sweeps. Alternating kernel comparisons measured 320→428 MH/s and 256→329 MH/s as overall throughput changed. Two CPU workers measured approximately **0.89 MH/s**. These runs used different hardware and conditions and are not a controlled comparison with the NVIDIA results.
+
+## Automatic minting
+
+The miner derives your wallet address from its private key. The wallet needs enough **ETH on Robinhood Chain** for the mint and gas.
+
+Create a `.env` file in the directory where you run the command:
+
+```dotenv
+HASHCATS_PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+```
+
+Restrict access, then start mining:
+
+```sh
+chmod 600 .env
+node src/cli.js mine \
+  --submit \
+  --max-mint-price 0.1 \
+  --max-fee-gwei 10 \
+  --max-gas 1000000 \
+  --max-mints 1
+```
+
+This permits up to **0.1 ETH per mint, excluding gas**, and stops after one successful mint. The ceilings are examples; choose your own budget. On NVIDIA/Linux, add `--backend vulkan --kernel split` to use the kernel measured above.
+
+The CLI loads `.env` automatically from the current working directory. Exported environment variables take precedence. A missing `.env` is fine; other file-loading errors stop the CLI. `.env` files are ignored by Git.
+
+<details>
+<summary><strong>Use a separate key file instead</strong></summary>
+
+Store a `0x`-prefixed private key in a restricted file, then run:
 
 ```sh
 chmod 600 /path/to/miner.key
@@ -45,52 +108,114 @@ node src/cli.js mine \
   --max-mints 1
 ```
 
-`--max-mint-price` is an ETH ceiling per mint, excluding gas. It is required for submission. `--max-mints` defaults to one successful mint. The example's ceilings are examples, not predictions of the current price or fees. `HASHCATS_PRIVATE_KEY` is supported as an alternative to `--key-file`. Never pass a private key as the wallet address.
+`--key-file` takes precedence over `HASHCATS_PRIVATE_KEY`. Never pass a private key as the wallet address.
 
-Before sending, the miner rechecks the previous work, wallet target, anchor age and price, runs `eth_call` simulation, estimates gas and fees, and applies the configured ceilings. Every GPU winner is independently hashed on the CPU.
+</details>
 
-The miner writes the exact signed transaction and its hash before broadcasting. If broadcasting or receipt tracking fails, it stops. Inspect the recorded transaction hash on Robinhood Chain before restarting. A timeout does not prove the transaction failed. `results/signed-transaction-*.json` contains signed bytes that can be broadcast; treat those files as sensitive until the proof expires. Proof-only files have not been simulated and may already be stale.
+### From proof to mint
 
-## GPU selection
+1. Independently verify the GPU winner on the CPU.
+2. Recheck previous work, wallet target, anchor age, and mint price.
+3. Simulate with `eth_call`, estimate gas and fees, and enforce spending ceilings.
+4. Write the exact signed transaction and hash before broadcasting.
+5. Wait for a successful receipt and stop when `--max-mints` is reached.
+
+If broadcasting or receipt tracking fails, the miner stops. Check the recorded transaction hash on Robinhood Chain before restarting: a timeout does not prove failure. `results/signed-transaction-*.json` contains broadcastable signed bytes; treat these files as sensitive until the proof expires. Proof-only files have not been simulated and may already be stale.
+
+Actual paid mint execution remains untested. A valid proof can expire or lose a race before execution. Receipt tracking requests one confirmation.
+
+## Choose your hardware
+
+| Platform | Backend | Verification status |
+| :--- | :--- | :--- |
+| Apple Silicon | `metal` | Tested on Apple M4 Pro |
+| NVIDIA / Linux | `vulkan` | Tested on RTX PRO 6000 Blackwell |
+| NVIDIA / Windows | `d3d12` | Implemented; not hardware-tested here |
+| CPU | `--engine cpu` | Worker-thread fallback for diagnostics and portability |
 
 ```sh
 # Apple Silicon
 node src/cli.js benchmark --backend metal
 
-# NVIDIA on Linux, with Vulkan drivers installed
+# NVIDIA / Linux
 node src/cli.js selftest --backend vulkan
-node src/cli.js mine --backend vulkan --address 0xYOUR_WALLET_ADDRESS
+node src/cli.js benchmark --backend vulkan --kernel split --seconds 30
 
-# NVIDIA on Windows
+# NVIDIA / Windows
 node src/cli.js selftest --backend d3d12
-```
 
-`--adapter NAME` selects a Dawn adapter by its name. Dawn prints available names when an unmatched name is supplied, for example `node src/cli.js devices --adapter list`. `devices` reports the selected adapter, not an inventory of every card. Run separate processes with different adapter names for multiple cards. Random 224-bit nonce prefixes prevent practical overlap. Use one submitting process per wallet to avoid transaction-nonce contention; this version does not coordinate signers between processes.
-
-Software adapters are rejected. A Linux NVIDIA machine needs a working Vulkan ICD and permission to access the GPU devices. Containers must expose the GPU and its driver libraries. Dawn's prebuilt binary must support the host OS and architecture. See [Dawn's Node package documentation](https://github.com/dawn-gpu/node-webgpu) for platform details.
-
-The CPU fallback uses Node worker threads and is intended for portability and diagnostics:
-
-```sh
+# CPU fallback
 node src/cli.js benchmark --engine cpu --threads 4
 node src/cli.js mine --engine cpu --threads 4 --address 0xYOUR_WALLET_ADDRESS
 ```
 
-## Tuning and operation
+### Running in a GPU pod
 
-GPU defaults use the interleaved Keccak kernel, 64 threads per workgroup, 16 hashes per invocation, and 8,388,608 hashes per batch. The interleaved kernel stores even and odd lane bits separately, reducing the work needed for rotations. Use `--kernel split` to select the original low/high implementation. Set `--workgroup 64|128|256`, `--per-thread N`, and `--batch-size N` to benchmark alternatives. Larger batches reduce dispatch overhead but delay reacting to new work and shutdown. Keep batches short enough to finish comfortably inside the anchor window. Short sweeps reached roughly 430–470 MH/s on this Apple M4 Pro. Alternating comparisons measured 320→428 MH/s and 256→329 MH/s as overall throughput changed, about a 30% gain; this is a short measurement, not a guarantee for other machines or sustained thermal conditions. Two CPU workers measured about 0.89 MH/s.
+The container must expose the GPU, its driver libraries, and a working Vulkan ICD. Software adapters are rejected. Dawn's prebuilt binary must also support the host OS and architecture; see the [Dawn Node documentation](https://github.com/dawn-gpu/node-webgpu).
 
-Chain state refreshes every 500 ms plus RPC latency. The miner pauses when its last successful snapshot is older than 3 seconds. Use `--rpc URL` to supply your own Robinhood Chain endpoint. `--poll-ms` and `--max-age-ms` tune refresh and pause thresholds. Default RPCs and the contract address are pinned in `src/chain.js`, and the RPC chain ID must be 4663.
+On the tested Ubuntu pod, the NVIDIA libraries were present but Vulkan initialization failed because `libEGL.so.1` was missing. Installing `libegl1` resolved it:
 
-Mining runs at full compute utilization until a proof, duration limit, or signal stops it. It cannot guarantee a mint. Other miners and changing difficulty affect the outcome, and a valid proof can become stale before its transaction executes. A mined block receipt is checked for success; no confirmation beyond the first receipt is requested.
+```sh
+apt-get update
+apt-get install -y libegl1
+node src/cli.js devices --backend vulkan
+npm run test:gpu
+```
 
-## Verification and research
+<details>
+<summary><strong>Adapter selection and multiple GPUs</strong></summary>
 
-- `npm test`: packing, full target comparison, nonce allocation, CPU partitions, chain snapshots, proof files, signing, spending limits, and submission failure behavior.
-- `npm run test:gpu`: Both kernels are tested, each with 3,082 GPU hashes compared against an independent CPU implementation, plus five target boundaries. GPU initialization also checks 16 hashes every time.
+`--adapter NAME` selects a Dawn adapter by name. An unmatched name prints the available names:
 
-The live contract's `workHash` was checked over RPC, and a bounded live mining run and SIGINT shutdown were tested without signing. Actual paid mint execution and NVIDIA hardware remain untested.
+```sh
+node src/cli.js devices --adapter list
+```
 
-Run `npm run tune` to compare GPU workgroup and batch settings. It emits JSON lines and defaults to the interleaved kernel. Set `TUNE_KERNEL=split` to compare the original kernel and `TUNE_SECONDS=5` for longer samples. The defaults were tuned on Apple Silicon; benchmark both kernels on NVIDIA before choosing one.
+`devices` reports the selected adapter, not an inventory of every card. Run separate processes with different adapter names for multiple cards. Random 224-bit nonce prefixes prevent practical overlap.
 
-See [the protocol study](docs/protocol.md) for the deployed miner's structure, byte layout, and replication decisions. `node src/cli.js --help` lists all options.
+Use one submitting process per wallet to avoid transaction-nonce contention. This version does not coordinate signers between processes.
+
+</details>
+
+## Tune your miner
+
+| Setting | Default | Option |
+| :--- | :--- | :--- |
+| Keccak kernel | Interleaved even/odd lane bits | `--kernel interleaved\|split` |
+| Workgroup size | 64 | `--workgroup 64\|128\|256` |
+| Hashes per invocation | 16 | `--per-thread N` |
+| Hashes per GPU batch | 8,388,608 | `--batch-size N` |
+| Chain polling interval | 500 ms + RPC latency | `--poll-ms N` |
+| Maximum snapshot age | 3 seconds | `--max-age-ms N` |
+
+Larger batches reduce dispatch overhead but delay new-work handling and shutdown. Keep batches comfortably inside the anchor window. The miner pauses when the last successful chain snapshot exceeds the age limit.
+
+```sh
+npm run tune
+TUNE_KERNEL=split TUNE_SECONDS=5 npm run tune
+```
+
+The tuning script emits JSON lines. Defaults were tuned on Apple Silicon; measure alternatives on your own hardware. Mining runs at full compute utilization until a proof, duration limit, or signal stops it; submission mode can continue until its mint limit is reached.
+
+## Network
+
+| Setting | Default |
+| :--- | :--- |
+| Network | Robinhood Chain · chain ID **4663** |
+| Primary RPC | `https://rpc.mainnet.chain.robinhood.com` |
+| Fallback RPC | `https://robinhood.drpc.org` |
+| Collection | `0xCA75DF55Cc9C476DB27a7375D1fc8E794cf80721` |
+
+Add `--rpc URL` to use your own endpoint. The miner checks the RPC chain ID before mining. Network defaults and the contract ABI live in [`src/chain.js`](src/chain.js).
+
+## Verification
+
+```sh
+npm test                # Software tests
+npm run test:gpu        # Both GPU kernels against independent CPU hashes
+node src/cli.js --help  # Full CLI reference
+```
+
+Software tests cover packing, full target comparison, nonce allocation, CPU partitions, chain snapshots, proof files, signing, spending limits, and submission failure behavior. GPU initialization also verifies 16 hashes every time it starts.
+
+For byte layouts, deployed-contract research, and implementation decisions, read the [protocol study](docs/protocol.md).
