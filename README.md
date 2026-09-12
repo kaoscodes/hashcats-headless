@@ -8,6 +8,7 @@
 </p>
 
 <p align="center">
+  <a href="#runpod-one-command-setup">RunPod wizard</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#automatic-minting">Automatic minting</a> ·
@@ -21,6 +22,43 @@
 | Native compute | Verified work | Controlled submission |
 | :--- | :--- | :--- |
 | Dawn WebGPU runs WGSL directly through Metal, Vulkan, or D3D12. | Every GPU winner is independently hashed on the CPU. | Explicit mint and gas ceilings, simulation, and a transaction journal before broadcast. |
+
+## RunPod: one-command setup
+
+Start an **NVIDIA GPU pod** with an **Ubuntu-based RunPod PyTorch image** (Linux x86_64), then open its root terminal and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kaoscodes/hashcats-headless/main/scripts/runpod.sh -o /tmp/hashcats-runpod.sh && bash /tmp/hashcats-runpod.sh
+```
+
+The download and clone require this repository to be public, or separately configured GitHub access while it is private.
+
+The wizard installs Node.js 22 when needed, Git, tmux, and the Vulkan/EGL runtime dependencies. It clones or updates this repo, installs the pinned npm dependencies, and verifies both GPU kernels before asking for:
+
+1. Your private key, entered with terminal echo disabled.
+2. The maximum number of successful mints (default **1**).
+3. Your maximum price **per cat** in ETH, excluding gas (default **0.1**).
+4. Confirmation to start paid mining with the displayed wallet and limits.
+
+It checks live wallet difficulty and mint price, then launches the Vulkan split kernel in a detached **`hashcats`** tmux session. Gas ceilings are 1,000,000 gas and 10 gwei per gas. The wallet must already hold enough ETH on Robinhood Chain for minting and gas.
+
+```sh
+tmux attach -t hashcats
+```
+
+Detach with **Ctrl+B**, then **D**. Stop mining with **Ctrl+C** inside the session. tmux keeps mining alive when you disconnect; it does **not** survive stopping or restarting the pod.
+
+The private key is stored in `.runpod/miner.key` with mode `600`, inside a mode-`700` directory. The runner uses `--key-file`, so it takes precedence over `.env` and exported keys. Logs are saved to `.runpod/miner-*.log`; proof and transaction journals remain in `results/`. `.runpod/` is ignored by Git.
+
+Rerunning the wizard leaves an existing `hashcats` session untouched. An exited miner's pane remains visible, and the wizard never automatically restarts a failed submission. After checking the logs and any recorded transaction hash, remove the stopped session with `tmux kill-session -t hashcats`, then rerun the wizard. The mint count starts over for each new run.
+
+To choose another install directory or session name:
+
+```sh
+HASHCATS_DIR=/workspace/my-miner HASHCATS_SESSION=my-miner bash /tmp/hashcats-runpod.sh
+```
+
+The installer accepts a clean `main` checkout of this repository and updates it with a fast-forward pull. It leaves local changes and other repositories alone. NVIDIA kernel drivers and GPU device access must come from the pod runtime; the installer does not replace them.
 
 ## Quick start
 
