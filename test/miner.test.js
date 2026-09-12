@@ -44,3 +44,60 @@ test('successful submission waits for receipt and obeys max-mints',async()=>{
     assert.ok((await readdir(output)).some(f=>f.startsWith('receipt-')));
   }finally{await rm(output,{recursive:true,force:true});}
 });
+
+test('receipt timeout emits unknown submission outcome, never a confirmed mint',async()=>{
+  const output=await mkdtemp(join(tmpdir(),'hashcats-'));const {engine,chain}=setup();const events=[];
+  chain.prepare=async()=>({tx:{}});chain.sign=async()=>'0x1234';
+  chain.client={sendRawTransaction:async()=>keccak256('0x1234'),waitForTransactionReceipt:async()=>{throw new Error('receipt timeout');}};
+  try {
+    await assert.rejects(mine({engine,chain,miner:FIXTURE.miner,submit:true,output,pollMs:1,
+      signal:new AbortController().signal,log:e=>events.push(e)}),/receipt timeout/);
+    assert.equal(events.find(e=>e.event==='submission-failed').outcome,'unknown');
+    assert.ok(!events.some(e=>e.event==='minted'));
+    assert.equal(events.at(-1).accepted,0);
+  }finally{await rm(output,{recursive:true,force:true});}
+});
+
+test('reverted receipt emits a failed mint outcome and preserves its receipt',async()=>{
+  const output=await mkdtemp(join(tmpdir(),'hashcats-'));const {engine,chain}=setup();const events=[];
+  chain.prepare=async()=>({tx:{}});chain.sign=async()=>'0x1234';
+  chain.client={sendRawTransaction:async()=>keccak256('0x1234'),waitForTransactionReceipt:async()=>({status:'reverted'})};
+  try {
+    await assert.rejects(mine({engine,chain,miner:FIXTURE.miner,submit:true,output,pollMs:1,
+      signal:new AbortController().signal,log:e=>events.push(e)}),/Mint reverted/);
+    assert.equal(events.find(e=>e.event==='submission-failed').outcome,'reverted');
+    assert.ok(!events.some(e=>e.event==='minted'));
+    assert.ok((await readdir(output)).some(f=>f.startsWith('receipt-')));
+  }finally{await rm(output,{recursive:true,force:true});}
+});
+
+test('balance RPC failure is visible but does not prevent mining or delay shutdown for its refresh interval',async()=>{
+  const output=await mkdtemp(join(tmpdir(),'hashcats-'));const {engine,chain}=setup();const events=[];
+  chain.walletBalance=async()=>{throw new Error('balance endpoint down');};
+  const start=performance.now();
+  try {
+    const result=await mine({engine,chain,miner:FIXTURE.miner,output,pollMs:1,balancePollMs:60000,
+      signal:new AbortController().signal,log:e=>events.push(e)});
+    assert.ok(result.proofPath);
+    assert.ok(events.some(e=>e.event==='wallet-error'));
+    assert.ok(performance.now()-start<3000);
+  }finally{await rm(output,{recursive:true,force:true});}
+});
+
+test('the final dashboard balance is refreshed after a confirmed mint, including its actual price and gas',async()=>{
+  const output=await mkdtemp(join(tmpdir(),'hashcats-'));const {engine,chain}=setup();const events=[];
+  let confirmed=false;
+  chain.walletBalance=async()=>confirmed?800n:1000n;
+  chain.prepare=async()=>({tx:{},price:150n});chain.sign=async()=>'0x1234';
+  chain.client={sendRawTransaction:async()=>keccak256('0x1234'),waitForTransactionReceipt:async()=>{
+    confirmed=true;return {status:'success',gasUsed:10n,effectiveGasPrice:5n};
+  }};
+  try {
+    await mine({engine,chain,miner:FIXTURE.miner,submit:true,output,pollMs:1,
+      signal:new AbortController().signal,log:e=>events.push(e)});
+    assert.equal(events.filter(e=>e.event==='wallet').at(-1).balance,800n);
+    const mint=events.find(e=>e.event==='minted');
+    assert.equal(mint.price,150n);assert.equal(mint.gasCost,50n);
+    assert.equal(events.at(-1).accepted,1);
+  }finally{await rm(output,{recursive:true,force:true});}
+});

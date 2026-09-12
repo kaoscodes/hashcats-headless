@@ -103,11 +103,11 @@ write_runner() {
   {
     printf '#!/usr/bin/env bash\nset -uo pipefail\numask 077\n'
     printf 'cd %q || exit 1\n' "$INSTALL_DIR"
-    printf 'log=%q/miner-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$$.log\n' "$STATE_DIR"
+    printf 'log=%q/miner-$(date -u +%%Y%%m%%dT%%H%%M%%SZ)-$$.jsonl\n' "$STATE_DIR"
     printf 'printf "Mining log: %%s\\n" "$log"\n'
-    printf '%q src/cli.js mine --backend vulkan --kernel split --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q 2>&1 | tee "$log"\n' \
+    printf '%q src/cli.js mine --backend vulkan --kernel split --submit --key-file %q --max-mint-price %q --max-fee-gwei 10 --max-gas 1000000 --max-mints %q --tui --log-file "$log"\n' \
       "$node_bin" "$key_file" "$max_price" "$max_mints"
-    printf 'status=${PIPESTATUS[0]}\n'
+    printf 'status=$?\n'
     printf 'printf "\\nMiner exited with status %%s. No automatic restart.\\n" "$status"\n'
     printf 'printf "Check the log and any transaction journal before starting again.\\n"\n'
     printf 'exit "$status"\n'
@@ -221,7 +221,7 @@ HELP
   say 'Miner launched in tmux.'
   printf 'Watch / rejoin: tmux attach -t %q\n' "$SESSION"
   printf 'Detach: Ctrl+B, then D. Stop mining: Ctrl+C inside the session.\n'
-  printf 'Logs: %s/miner-*.log\n' "$STATE_DIR"
+  printf 'Logs: %s/miner-*.jsonl\n' "$STATE_DIR"
   printf 'tmux survives terminal disconnects, but not a pod stop or restart.\n'
 }
 

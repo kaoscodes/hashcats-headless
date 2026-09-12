@@ -56,7 +56,15 @@ test('RunPod runner safely quotes paths, applies limits, logs output, and preser
   const state = join(checkout,'.runpod');
   mkdirSync(state,{recursive:true});
   const fakeNode = join(dir,'fake node');
-  writeFileSync(fakeNode, '#!/bin/bash\nprintf "%s\\n" "$@"\necho mock-miner-failure\nexit 23\n',{mode:0o700});
+  writeFileSync(fakeNode, `#!/bin/bash
+printf '%s\\n' "$@"
+while (( $# )); do
+  if [[ "$1" == --log-file ]]; then printf 'mock-miner-failure\\n' > "$2"; break; fi
+  shift
+done
+echo mock-miner-failure
+exit 23
+`,{mode:0o700});
   const runner = join(state,'start-miner.sh');
   const r = shell(`
     INSTALL_DIR=${quote(checkout)}
@@ -68,6 +76,8 @@ test('RunPod runner safely quotes paths, applies limits, logs output, and preser
   const started=spawnSync('bash',[runner],{encoding:'utf8',timeout:10000});
   assert.equal(started.status,23,started.stderr);
   assert.match(started.stdout,/--max-mints\n7/);
+  assert.match(started.stdout,/--tui/);
+  assert.ok(!readFileSync(runner,'utf8').includes('tee'));
   assert.match(started.stdout,/--max-mint-price\n0\.125/);
   assert.match(started.stdout,/No automatic restart/);
   assert.equal(started.stdout.split('mock-miner-failure').length-1,1);

@@ -10,6 +10,7 @@ import { Chain } from './chain.js';
 import { selftest, FIXTURE } from './selftest.js';
 import { randomPrefix, json } from './proof.js';
 import { mine } from './miner.js';
+import { createReporter } from './reporter.js';
 try {
   loadEnvFile();
 } catch (error) {
@@ -19,9 +20,9 @@ try {
   }
 }
 const strings=['kernel','engine','backend','adapter','threads','workgroup','per-thread','batch-size','seconds','address','rpc','contract',
-  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output'];
+  'poll-ms','max-age-ms','key-file','max-mint-price','max-gas','max-fee-gwei','max-mints','output','log-file'];
 const {values:v,positionals}=parseArgs({allowPositionals:true,options:{...Object.fromEntries(strings.map(k=>[k,{type:'string'}])),
-  help:{type:'boolean',short:'h'},submit:{type:'boolean'},json:{type:'boolean'}}});
+  help:{type:'boolean',short:'h'},submit:{type:'boolean'},json:{type:'boolean'},tui:{type:'boolean'},'no-tui':{type:'boolean'}}});
 const command=positionals[0]??'help';
 if(v.help||command==='help') {
   console.log(`Hashcats headless miner, native WebGPU (no browser)
@@ -57,10 +58,14 @@ Chain and mining options:
   --max-fee-gwei N      Fee per gas ceiling (default: 10)
   --max-mints N         Stop after this many successful mints (default: 1)
   --json                Emit JSON lines
+  --tui                 Force the live mining dashboard (automatic in terminals)
+  --no-tui              Use scrolling event output instead of the dashboard
+  --log-file PATH       Detailed mining JSONL log (default: results/miner-*.jsonl)
 
 Run npm test and npm run test:gpu before mining on a new machine.`);
 } else {
-  const log=o=>console.log(v.json?json(o):Object.entries(o).map(([k,x])=>`${k}=${typeof x==='object'?json(x):x}`).join(' '));
+  let reporter;
+  const log=o=>reporter?reporter.log(o):console.log(v.json?json(o):Object.entries(o).map(([k,x])=>`${k}=${typeof x==='object'?json(x):x}`).join(' '));
   const integer=(key,fallback,min=1,max=2**32-1)=>{
     const n=v[key]===undefined?fallback:Number(v[key]);
     if(!Number.isSafeInteger(n)||n<min||n>max)throw new Error(`--${key} must be an integer in ${min}..${max}`);
@@ -73,6 +78,8 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
   try {
     if(positionals.length>1)throw new Error('Unexpected positional argument');
     if(!['devices','selftest','benchmark','status','mine'].includes(command))throw new Error(`Unknown command: ${command}`);
+    if(v.tui&&(v.json||v['no-tui']))throw new Error('--tui cannot be combined with --json or --no-tui');
+    if(v.tui&&command!=='mine')throw new Error('--tui is available for the mine command');
     if(v.engine&&!['gpu','cpu'].includes(v.engine))throw new Error('--engine must be gpu or cpu');
     const threads=integer('threads',Math.max(1,availableParallelism()-1),1,256);
     const options={backend:v.backend,adapter:v.adapter,kernel:v.kernel??'interleaved',workgroup:integer('workgroup',64,64,256),perThread:integer('per-thread',16,1,1024)};
@@ -103,6 +110,10 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
           limits={maxPrice:parseEther(v['max-mint-price']),maxGas:BigInt(integer('max-gas',1000000)),maxFeePerGas:parseGwei(v['max-fee-gwei']??'10')};
           if(limits.maxPrice<0n||limits.maxFeePerGas<=0n)throw new Error('Price must be nonnegative; fee limit must be positive');
         } else {if(!v.address)throw new Error('--address is required');miner=getAddress(v.address);}
+        const maxMints=integer('max-mints',1,1,10000);
+        reporter=createReporter({tui:!!v.tui||!!process.stdout.isTTY&&!v.json&&!v['no-tui'],jsonLines:!!v.json,
+          logFile:v['log-file'],output:v.output??'results'});
+        log({event:'session',miner,submit:!!v.submit,maxMints,maxPrice:limits?.maxPrice,maxAgeMs:integer('max-age-ms',3000,500,10000),logPath:reporter.path});
       }
       engine=cpu?new CpuMiner({threads}):await GpuMiner.create(options);
       log({event:'device',...engine.info});
@@ -124,6 +135,14 @@ Run npm test and npm run test:gpu before mining on a new machine.`);
           maxMints:integer('max-mints',1,1,10000),output:v.output??'results',limits,signal:controller.signal,log});
       }
     }
-  } catch(e) { console.error(json({event:'error',message:e.shortMessage??e.message}));process.exitCode=1; }
-  finally {await engine?.close();process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);}
+  } catch(e) {
+    const event={event:'error',message:e.shortMessage??e.message};
+    try {if(reporter)reporter.log(event);else console.error(json(event));}
+    catch {console.error(json(event));}
+    process.exitCode=1;
+  }
+  finally {
+    try {await engine?.close();}
+    finally {reporter?.close();process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);}
+  }
 }

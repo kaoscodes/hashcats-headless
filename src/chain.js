@@ -24,6 +24,7 @@ export class Chain {
     this.client = createPublicClient({chain:this.chain,transport:this.transport});
   }
   read(name,args=[],blockNumber) { return this.client.readContract({address:this.contract,abi:ABI,functionName:name,args,blockNumber}); }
+  walletBalance(miner) { return this.client.getBalance({address:getAddress(miner)}); }
   async check() {
     const id = await this.client.getChainId();
     if (id !== CHAIN_ID) throw new Error(`Wrong chain: expected ${CHAIN_ID}, received ${id}`);

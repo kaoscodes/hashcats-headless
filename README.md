@@ -48,7 +48,7 @@ tmux attach -t hashcats
 
 Detach with **Ctrl+B**, then **D**. Stop mining with **Ctrl+C** inside the session. tmux keeps mining alive when you disconnect; it does **not** survive stopping or restarting the pod.
 
-The private key is stored in `.runpod/miner.key` with mode `600`, inside a mode-`700` directory. The runner uses `--key-file`, so it takes precedence over `.env` and exported keys. Logs are saved to `.runpod/miner-*.log`; proof and transaction journals remain in `results/`. `.runpod/` is ignored by Git.
+The private key is stored in `.runpod/miner.key` with mode `600`, inside a mode-`700` directory. The runner uses `--key-file`, so it takes precedence over `.env` and exported keys. Logs are saved to `.runpod/miner-*.jsonl`; proof and transaction journals remain in `results/`. `.runpod/` is ignored by Git.
 
 Rerunning the wizard leaves an existing `hashcats` session untouched. An exited miner's pane remains visible, and the wizard never automatically restarts a failed submission. After checking the logs and any recorded transaction hash, remove the stopped session with `tmux kill-session -t hashcats`, then rerun the wizard. The mint count starts over for each new run.
 
@@ -80,13 +80,48 @@ Start a proof-only run for your public wallet address:
 node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS
 ```
 
-This saves the first proof to `results/` without signing or paying. Add `--seconds 60` for a bounded run, `--json` for structured logs, or stop with **Ctrl-C**. Proofs include the nonce, original anchor block, hash input, and unsigned transaction. They expire quickly, so manual submission is usually impractical.
+This saves the first proof to `results/` without signing or paying. An interactive terminal shows a live dashboard. Add `--seconds 60` for a bounded run, `--json` for structured output, or stop with **Ctrl-C**. Proofs include the nonce, original anchor block, hash input, and unsigned transaction. They expire quickly, so manual submission is usually impractical.
 
 Read wallet difficulty, mint price, and the current anchor without starting the GPU:
 
 ```sh
 node src/cli.js status --address 0xYOUR_WALLET_ADDRESS
 ```
+
+## Live dashboard
+
+Mining in a terminal opens a dashboard that refreshes once per second. It replaces scrolling progress output while detailed timestamped events are saved separately to `results/miner-*.jsonl`.
+
+The top of the screen answers the overnight question immediately: **how many cats were actually minted this session, how many proofs were found, and whether anything went wrong**.
+
+| Metric | What it means |
+| :--- | :--- |
+| Confirmed cats / goal | Successful transaction receipts in this run; not lifetime wallet mint history |
+| Proofs found | Valid proofs, including those later discarded or unsuccessfully submitted |
+| Discarded / reverted / unknown TX | Proofs rejected before broadcast, confirmed transaction reversions, and ambiguous broadcast or receipt failures |
+| Current / average hashrate | Recent throughput and the average over the mining loop, including pauses and submission waits |
+| Mean ETA / expected proofs per day | Probability-based estimates using the current wallet target and average hashrate; not a countdown or guaranteed successful mints |
+| ETH balance / mint price | Live chain values; balance refreshes about every 15 seconds and its age is shown |
+| Confirmed spend | Mint price plus gas for confirmed successful transactions in this session; excludes reverted or unknown transactions |
+| Last problem / last transaction | Persistent problem summary and the last transaction hash, even after mining resumes or stops |
+
+A receipt timeout is marked **unknown**, never counted as a confirmed cat or assumed to be a failed transaction. Check its hash before restarting. Stale chain data, balance-refresh errors, insufficient balance for the mint price, and a mint price above your ceiling are visible. Minting also requires gas.
+
+```sh
+# Force the dashboard (normally automatic in a terminal)
+node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS --tui
+
+# Choose a NEW detailed log file; existing files are never overwritten
+node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS --log-file results/my-run.jsonl
+
+# Keep scrolling output, or use JSON for another tool
+node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS --no-tui
+node src/cli.js mine --address 0xYOUR_WALLET_ADDRESS --json
+```
+
+`--tui` cannot be combined with `--json` or `--no-tui`. Redirected output defaults to scrolling events. The RunPod wizard starts the dashboard directly in tmux and sends detailed logs to `.runpod/miner-*.jsonl`, without piping the screen through `tee`. Set `NO_COLOR=1` to disable colors.
+
+The final dashboard stays visible when the process exits; the wizard also preserves the stopped tmux pane. Updating the code does not change an already-running process. To use the dashboard, restart your mining command with the updated version after checking that no submission is pending. An older wizard-generated runner can be regenerated by rerunning the updated wizard once its old session has stopped and been removed.
 
 ## Performance
 
